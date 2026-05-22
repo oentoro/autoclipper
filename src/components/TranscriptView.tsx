@@ -1,16 +1,28 @@
 import { useState } from "react";
 import type { SrtSegment } from "../types";
 
+const ASPECT_RATIOS = [
+  { value: "original", label: "Original", w: 16, h: 9,  desc: "Asli"          },
+  { value: "16:9",     label: "16:9",     w: 16, h: 9,  desc: "Landscape"     },
+  { value: "9:16",     label: "9:16",     w: 9,  h: 16, desc: "Shorts/Reels"  },
+  { value: "1:1",      label: "1:1",      w: 1,  h: 1,  desc: "Square"        },
+  { value: "4:5",      label: "4:5",      w: 4,  h: 5,  desc: "Instagram"     },
+] as const;
+
 interface Props {
   segments: SrtSegment[];
   selectedIndices: Set<number>;
   aiReasoning: string;
+  burnSubtitles: boolean;
+  aspectRatio: string;
   onToggle: (index: number) => void;
   onSelectAll: () => void;
   onClearAll: () => void;
   onAiAnalyze: () => void;
   onClip: () => void;
   onSaveSrt: () => void;
+  onBurnSubtitlesChange: (v: boolean) => void;
+  onAspectRatioChange: (v: string) => void;
   loading: boolean;
   videoPath: string;
 }
@@ -19,12 +31,16 @@ export default function TranscriptView({
   segments,
   selectedIndices,
   aiReasoning,
+  burnSubtitles,
+  aspectRatio,
   onToggle,
   onSelectAll,
   onClearAll,
   onAiAnalyze,
   onClip,
   onSaveSrt,
+  onBurnSubtitlesChange,
+  onAspectRatioChange,
   loading,
   videoPath,
 }: Props) {
@@ -81,12 +97,47 @@ export default function TranscriptView({
           </div>
         )}
 
+        <div className="ar-section">
+          <p className="sidebar-label">Aspect Ratio</p>
+          <div className="ar-grid">
+            {ASPECT_RATIOS.map((ar) => {
+              const scale = 32 / Math.max(ar.w, ar.h);
+              const bw = Math.round(ar.w * scale);
+              const bh = Math.round(ar.h * scale);
+              return (
+                <button
+                  key={ar.value}
+                  className={`ar-btn ${aspectRatio === ar.value ? "active" : ""}`}
+                  onClick={() => onAspectRatioChange(ar.value)}
+                  title={ar.desc}
+                >
+                  <div className="ar-preview" style={{ width: bw, height: bh }} />
+                  <span className="ar-label">{ar.label}</span>
+                  <span className="ar-desc">{ar.desc}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <label className="subtitle-toggle">
+          <input
+            type="checkbox"
+            checked={burnSubtitles}
+            onChange={(e) => onBurnSubtitlesChange(e.target.checked)}
+          />
+          <span className="subtitle-toggle-label">
+            <span className="subtitle-toggle-icon">CC</span>
+            Bakar Subtitle
+          </span>
+        </label>
+
         <button
           className="btn btn-clip w-full"
           onClick={onClip}
           disabled={selectedIndices.size === 0 || loading}
         >
-          ✂ Buat {selectedIndices.size} Clip
+          ✂ Buat Short Video ({selectedIndices.size} segmen)
         </button>
       </div>
 

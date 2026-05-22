@@ -1,19 +1,45 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { save } from "@tauri-apps/plugin-dialog";
 import VideoUpload from "./components/VideoUpload";
 import TranscriptView from "./components/TranscriptView";
 import ClipResults from "./components/ClipResults";
-import type { SrtSegment, TranscribeResult, AnalyzeResult, ClipResult, AppStep } from "./types";
+import DepsCheck from "./components/DepsCheck";
+import type { SrtSegment, TranscribeResult, AnalyzeResult, ClipResult, AppStep, DepsStatus } from "./types";
 
 export default function App() {
+  const [depsStatus, setDepsStatus] = useState<DepsStatus | null>(null);
+  const [depsChecking, setDepsChecking] = useState(true);
+  const [showDeps, setShowDeps] = useState(false);
+
+  useEffect(() => {
+    invoke<DepsStatus>("check_dependencies")
+      .then((status) => {
+        setDepsStatus(status);
+        setShowDeps(!status.all_required_ok);
+      })
+      .finally(() => setDepsChecking(false));
+  }, []);
+
+  function recheckDeps() {
+    setDepsChecking(true);
+    invoke<DepsStatus>("check_dependencies")
+      .then((status) => {
+        setDepsStatus(status);
+        if (status.all_required_ok) setShowDeps(false);
+      })
+      .finally(() => setDepsChecking(false));
+  }
+
   const [step, setStep] = useState<AppStep>("upload");
   const [videoPath, setVideoPath] = useState<string>("");
   const [segments, setSegments] = useState<SrtSegment[]>([]);
   const [srtContent, setSrtContent] = useState<string>("");
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [aiReasoning, setAiReasoning] = useState<string>("");
-  const [clipResults, setClipResults] = useState<ClipResult[]>([]);
+  const [clipResult, setClipResult] = useState<ClipResult | null>(null);
+  const [burnSubtitles, setBurnSubtitles] = useState<boolean>(true);
+  const [aspectRatio, setAspectRatio] = useState<string>("original");
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingMsg, setLoadingMsg] = useState<string>("");
@@ -25,7 +51,7 @@ export default function App() {
     setSrtContent("");
     setSelectedIndices(new Set());
     setAiReasoning("");
-    setClipResults([]);
+    setClipResult(null);
     await startTranscription(path);
   }
 
@@ -92,26 +118,30 @@ export default function App() {
       return;
     }
 
-    const outputDir = await open({
-      directory: true,
-      title: "Pilih folder output untuk clip",
+    const videoName = videoPath.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "output";
+    const outputPath = await save({
+      filters: [{ name: "Video MP4", extensions: ["mp4"] }],
+      defaultPath: `${videoName}_short.mp4`,
+      title: "Simpan video hasil gabungan",
     });
 
-    if (!outputDir) return;
+    if (!outputPath) return;
 
     setStep("clipping");
     setLoading(true);
-    setLoadingMsg(`Memproses ${selectedIndices.size} clip dengan FFmpeg...`);
+    setLoadingMsg(`Menggabungkan ${selectedIndices.size} segmen menjadi satu video...`);
     setError("");
 
     try {
-      const results = await invoke<ClipResult[]>("clip_video", {
+      const result = await invoke<ClipResult>("clip_video", {
         videoPath,
         segments,
         selectedIndices: Array.from(selectedIndices),
-        outputDir: outputDir as string,
+        outputPath: outputPath as string,
+        burnSubtitles,
+        aspectRatio,
       });
-      setClipResults(results);
+      setClipResult(result);
       setStep("done");
     } catch (e) {
       setError(String(e));
@@ -140,8 +170,29 @@ export default function App() {
     setSrtContent("");
     setSelectedIndices(new Set());
     setAiReasoning("");
-    setClipResults([]);
+    setClipResult(null);
     setError("");
+  }
+
+  if (depsChecking) {
+    return (
+      <div className="loading-overlay" style={{ position: "fixed" }}>
+        <div className="loading-box">
+          <div className="spinner" />
+          <p>Memeriksa dependensi...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (showDeps && depsStatus) {
+    return (
+      <DepsCheck
+        status={depsStatus}
+        onRetry={recheckDeps}
+        onContinue={() => setShowDeps(false)}
+      />
+    );
   }
 
   return (
@@ -154,11 +205,16 @@ export default function App() {
           </h1>
           <p className="app-subtitle">Clipping video otomatis berbasis AI</p>
         </div>
-        {step !== "upload" && (
-          <button className="btn btn-ghost" onClick={handleReset}>
-            ↩ Mulai Ulang
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowDeps(true)} title="Cek dependensi">
+            ⚙ Dependensi
           </button>
-        )}
+          {step !== "upload" && (
+            <button className="btn btn-ghost" onClick={handleReset}>
+              ↩ Mulai Ulang
+            </button>
+          )}
+        </div>
       </header>
 
       <div className="step-bar">
@@ -200,12 +256,16 @@ export default function App() {
             segments={segments}
             selectedIndices={selectedIndices}
             aiReasoning={aiReasoning}
+            burnSubtitles={burnSubtitles}
+            aspectRatio={aspectRatio}
             onToggle={toggleSegment}
             onSelectAll={selectAll}
             onClearAll={clearAll}
             onAiAnalyze={handleAiAnalyze}
             onClip={handleClip}
             onSaveSrt={handleSaveSrt}
+            onBurnSubtitlesChange={setBurnSubtitles}
+            onAspectRatioChange={setAspectRatio}
             loading={loading}
             videoPath={videoPath}
           />
@@ -213,7 +273,7 @@ export default function App() {
 
         {(step === "clipping" || step === "done") && (
           <ClipResults
-            results={clipResults}
+            result={clipResult}
             loading={step === "clipping"}
             onBack={() => setStep("transcript")}
           />

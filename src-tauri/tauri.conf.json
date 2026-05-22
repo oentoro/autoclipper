@@ -35,6 +35,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "resources": [
+      "../scripts/transcribe.py",
+      "../scripts/burn_subtitles.py"
     ]
   },
   "plugins": {

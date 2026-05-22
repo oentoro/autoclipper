@@ -2,6 +2,7 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/vendor/
 .DS_Store
 *.log
 __pycache__/
