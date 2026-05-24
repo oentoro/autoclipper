@@ -68,6 +68,19 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
           ))}
         </div>
 
+        {status.build_notes.length > 0 && (
+          <div className="deps-build-notes">
+            <p className="deps-section-label">Persyaratan Build</p>
+            <div className="deps-notes-body">
+              {status.build_notes.map((note, i) =>
+                i === 0
+                  ? <p key={i} className="deps-note-header">{note}</p>
+                  : <code key={i} className="deps-note-cmd">{note}</code>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="deps-actions">
           <button className="btn btn-secondary" onClick={onRetry}>
             ↺ Periksa Ulang

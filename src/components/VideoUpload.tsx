@@ -39,7 +39,7 @@ export default function VideoUpload({ onSelect, disabled }: Props) {
         {disabled ? (
           <>
             <p className="upload-title">Memproses video...</p>
-            <p className="upload-sub">Whisper sedang mentranskripsi audio</p>
+            <p className="upload-sub">Sedang mentranskripsi audio</p>
           </>
         ) : (
           <>
@@ -55,18 +55,21 @@ export default function VideoUpload({ onSelect, disabled }: Props) {
       <div className="feature-grid">
         <div className="feature-card">
           <span className="feature-icon">🎙</span>
-          <h3>Whisper AI</h3>
-          <p>Speech recognition akurat untuk bahasa Indonesia</p>
+          <h3>Transkripsi Otomatis</h3>
+          <p>Ubah audio menjadi teks secara akurat</p>
+          <span className="feature-badge">Whisper</span>
         </div>
         <div className="feature-card">
           <span className="feature-icon">🤖</span>
-          <h3>Gemma4 Analysis</h3>
-          <p>AI otomatis memilih segmen terpenting dari konten</p>
+          <h3>Analisis AI</h3>
+          <p>Pilih segmen terpenting dari konten secara otomatis</p>
+          <span className="feature-badge">Gemma3</span>
         </div>
         <div className="feature-card">
           <span className="feature-icon">✂</span>
-          <h3>FFmpeg Clipping</h3>
-          <p>Clip video berkualitas tinggi tanpa re-encode</p>
+          <h3>Penggabungan Video</h3>
+          <p>Gabungkan segmen pilihan menjadi satu video</p>
+          <span className="feature-badge">FFmpeg</span>
         </div>
       </div>
     </div>

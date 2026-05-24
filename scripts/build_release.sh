@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
-# Builds a fully self-contained .dmg / .app with all dependencies bundled.
-# Run from the project root: ./scripts/build_release.sh
+# Builds a fully self-contained app bundle with all dependencies.
+# Supports: macOS (.dmg / .app) and Linux (.deb / .rpm / .AppImage)
+# For Windows: use build_release.ps1
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-VENDOR="$PROJECT_DIR/src-tauri/vendor"
+cd "$SCRIPT_DIR/.."
 
-cd "$PROJECT_DIR"
-
-# ── Step 1: Setup vendor directory ───────────────────────────────────────────
+# Step 1: Setup vendor directory
 echo "==> Setting up bundled dependencies..."
 bash "$SCRIPT_DIR/setup_bundle.sh"
 
-# ── Step 2: Build with vendor resources injected into config ─────────────────
+# Step 2: Build Tauri app with vendor resources injected
 echo ""
 echo "==> Building Tauri app with bundled deps..."
 
-# Pass extra resource paths via --config override (merges with tauri.conf.json)
 EXTRA_CONFIG=$(cat <<'JSONEOF'
 {
   "bundle": {

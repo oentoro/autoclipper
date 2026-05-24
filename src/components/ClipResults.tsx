@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import type { ClipResult } from "../types";
 
 interface Props {
@@ -7,9 +8,8 @@ interface Props {
 }
 
 export default function ClipResults({ result, loading, onBack }: Props) {
-  async function openInFinder(path: string) {
-    const { Command } = await import("@tauri-apps/plugin-shell");
-    Command.create("open", ["-R", path]).execute();
+  function openInFinder(path: string) {
+    invoke("reveal_in_file_manager", { path });
   }
 
   function formatDuration(secs: number) {
@@ -22,7 +22,7 @@ export default function ClipResults({ result, loading, onBack }: Props) {
     return (
       <div className="results-container centered">
         <div className="spinner large" />
-        <p className="loading-text">Menggabungkan segmen dengan FFmpeg...</p>
+        <p className="loading-text">Sedang menggabungkan segmen video...</p>
         <p className="loading-sub">Ini mungkin memakan beberapa saat tergantung panjang video</p>
       </div>
     );

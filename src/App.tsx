@@ -1,16 +1,52 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import VideoUpload from "./components/VideoUpload";
 import TranscriptView from "./components/TranscriptView";
 import ClipResults from "./components/ClipResults";
 import DepsCheck from "./components/DepsCheck";
-import type { SrtSegment, TranscribeResult, AnalyzeResult, ClipResult, AppStep, DepsStatus } from "./types";
+import ModelManager from "./components/ModelManager";
+import type { SrtSegment, TranscribeResult, TranslateResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle } from "./types";
+import { DEFAULT_SUBTITLE_STYLE } from "./types";
+
+const WHISPER_LANGS = [
+  { code: "",   label: "Auto-detect" },
+  { code: "id", label: "Indonesia" },
+  { code: "en", label: "English" },
+  { code: "ja", label: "日本語" },
+  { code: "zh", label: "中文" },
+  { code: "ko", label: "한국어" },
+  { code: "es", label: "Español" },
+  { code: "fr", label: "Français" },
+  { code: "de", label: "Deutsch" },
+  { code: "pt", label: "Português" },
+  { code: "ar", label: "العربية" },
+];
+
+const TRANSLATE_LANGS = [
+  { code: "id", label: "Indonesia" },
+  { code: "en", label: "English" },
+  { code: "ja", label: "日本語" },
+  { code: "zh", label: "中文" },
+  { code: "ko", label: "한국어" },
+  { code: "es", label: "Español" },
+  { code: "fr", label: "Français" },
+  { code: "de", label: "Deutsch" },
+  { code: "pt", label: "Português" },
+  { code: "ar", label: "العربية" },
+];
 
 export default function App() {
   const [depsStatus, setDepsStatus] = useState<DepsStatus | null>(null);
   const [depsChecking, setDepsChecking] = useState(true);
   const [showDeps, setShowDeps] = useState(false);
+
+  function refreshModels() {
+    invoke<LlmModel[]>("list_llm_models").then(models => {
+      setLlmModels(models);
+    }).catch(() => {});
+  }
 
   useEffect(() => {
     invoke<DepsStatus>("check_dependencies")
@@ -19,6 +55,29 @@ export default function App() {
         setShowDeps(!status.all_required_ok);
       })
       .finally(() => setDepsChecking(false));
+    invoke<FontInfo[]>("get_system_fonts").then(setSystemFonts);
+    invoke<LlmModel[]>("list_llm_models").then((models) => {
+      setLlmModels(models);
+      if (models.length > 0) setSelectedLlm(models[0]);
+    }).catch(() => {});
+
+    // Always-active download progress listener
+    const unlistenPromise = listen<DownloadProgress>("llm-download-progress", event => {
+      const p = event.payload;
+      setDownloads(prev => ({ ...prev, [p.filename]: p }));
+      if (p.done) {
+        invoke<LlmModel[]>("list_llm_models").then(models => {
+          setLlmModels(models);
+          // Auto-select the newly downloaded model if nothing is selected yet
+          setSelectedLlm(prev => {
+            if (prev) return prev;
+            return models.find(m => m.source === "local" && m.path.includes(p.filename)) ?? models[0] ?? null;
+          });
+          setDownloads(prev => { const n = { ...prev }; delete n[p.filename]; return n; });
+        }).catch(() => {});
+      }
+    });
+    return () => { unlistenPromise.then(fn => fn()); };
   }, []);
 
   function recheckDeps() {
@@ -36,60 +95,124 @@ export default function App() {
   const [segments, setSegments] = useState<SrtSegment[]>([]);
   const [srtContent, setSrtContent] = useState<string>("");
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
-  const [aiReasoning, setAiReasoning] = useState<string>("");
+  const [sections, setSections] = useState<Section[]>([]);
+  const [detectedLanguage, setDetectedLanguage] = useState<string>("");
   const [clipResult, setClipResult] = useState<ClipResult | null>(null);
   const [burnSubtitles, setBurnSubtitles] = useState<boolean>(true);
   const [aspectRatio, setAspectRatio] = useState<string>("original");
+  const [subtitleFontSize, setSubtitleFontSize] = useState<number>(0);
+  const [subtitleFont, setSubtitleFont] = useState<string>("");
+  const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
+  const [systemFonts, setSystemFonts] = useState<FontInfo[]>([]);
+  const [llmModels, setLlmModels] = useState<LlmModel[]>([]);
+  const [selectedLlm, setSelectedLlm] = useState<LlmModel | null>(null);
+  const [showModelManager, setShowModelManager] = useState(false);
+  const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({});
+  const [sourceLanguage, setSourceLanguage] = useState<string>("");
+  const [transcribePreset, setTranscribePreset] = useState<string>("balanced");
+  const [translateTarget, setTranslateTarget] = useState<string>("id");
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingMsg, setLoadingMsg] = useState<string>("");
 
-  async function handleVideoSelect(path: string) {
+  function handleVideoSelect(path: string) {
     setVideoPath(path);
     setError("");
     setSegments([]);
     setSrtContent("");
     setSelectedIndices(new Set());
-    setAiReasoning("");
+    setSections([]);
     setClipResult(null);
-    await startTranscription(path);
+    setStep("ready");
   }
 
-  async function startTranscription(path: string) {
+  async function startTranscription() {
     setStep("transcribing");
     setLoading(true);
-    setLoadingMsg("Mentranskripsi audio menggunakan Whisper... (mungkin beberapa menit)");
+    setLoadingMsg("Sedang mentranskripsi audio... (mungkin beberapa menit)");
 
     try {
-      const result = await invoke<TranscribeResult>("transcribe_video", { videoPath: path });
+      const result = await invoke<TranscribeResult>("transcribe_video", {
+        videoPath,
+        sourceLanguage,
+        preset: transcribePreset,
+      });
       setSegments(result.segments);
       setSrtContent(result.srt_content);
+      setDetectedLanguage(result.detected_language);
       setStep("transcript");
     } catch (e) {
       setError(String(e));
-      setStep("upload");
+      setStep("ready");
     } finally {
       setLoading(false);
       setLoadingMsg("");
     }
   }
 
-  async function handleAiAnalyze() {
+  async function handleTranslate() {
     if (segments.length === 0) return;
     setLoading(true);
-    setLoadingMsg("AI sedang menganalisis transkrip...");
+    setLoadingMsg(`Menerjemahkan transkrip ke ${TRANSLATE_LANGS.find(l => l.code === translateTarget)?.label ?? translateTarget}...`);
     setError("");
 
     try {
-      const result = await invoke<AnalyzeResult>("analyze_transcript", { segments });
-      setSelectedIndices(new Set(result.important_indices));
-      setAiReasoning(result.reasoning);
+      const result = await invoke<TranslateResult>("translate_transcript", {
+        segments,
+        sourceLanguage: detectedLanguage || "auto",
+        targetLanguage: translateTarget,
+      });
+      setSegments(result.segments);
+      setSrtContent(result.srt_content);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
       setLoadingMsg("");
     }
+  }
+
+  async function handleClassify() {
+    if (segments.length === 0) return;
+    setLoading(true);
+    setLoadingMsg("AI sedang mengklasifikasikan bagian-bagian video...");
+    setError("");
+    setSections([]);
+    setSelectedIndices(new Set());
+
+    try {
+      const modelPath = selectedLlm?.source === "local" ? selectedLlm.path : "";
+      const ollamaModel = selectedLlm?.source === "ollama" ? selectedLlm.ollama_model : "";
+      const result = await invoke<ClassifyResult>("classify_transcript", {
+        segments,
+        modelPath,
+        ollamaModel,
+      });
+      setSections(result.sections);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+      setLoadingMsg("");
+    }
+  }
+
+  function toggleSection(sectionIdx: number) {
+    const section = sections[sectionIdx];
+    if (!section) return;
+    const inSection = segments
+      .filter(s => s.index >= section.start_index && s.index <= section.end_index)
+      .map(s => s.index);
+    setSelectedIndices(prev => {
+      const next = new Set(prev);
+      const allSelected = inSection.every(i => next.has(i));
+      if (allSelected) {
+        inSection.forEach(i => next.delete(i));
+      } else {
+        inSection.forEach(i => next.add(i));
+      }
+      return next;
+    });
   }
 
   function toggleSegment(index: number) {
@@ -140,6 +263,9 @@ export default function App() {
         outputPath: outputPath as string,
         burnSubtitles,
         aspectRatio,
+        fontSize: subtitleFontSize,
+        fontPath: subtitleFont,
+        subtitleStyleJson: JSON.stringify(subtitleStyle),
       });
       setClipResult(result);
       setStep("done");
@@ -169,9 +295,11 @@ export default function App() {
     setSegments([]);
     setSrtContent("");
     setSelectedIndices(new Set());
-    setAiReasoning("");
+    setSections([]);
     setClipResult(null);
     setError("");
+    setSourceLanguage("");
+    setDetectedLanguage("");
   }
 
   if (depsChecking) {
@@ -206,10 +334,20 @@ export default function App() {
           <p className="app-subtitle">Clipping video otomatis berbasis AI</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setShowModelManager(true)}
+            title="Kelola model AI"
+          >
+            🤖 Model AI
+            {Object.keys(downloads).length > 0 && (
+              <span className="dl-badge">{Object.keys(downloads).length}</span>
+            )}
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={() => setShowDeps(true)} title="Cek dependensi">
             ⚙ Dependensi
           </button>
-          {step !== "upload" && (
+          {(step !== "upload") && (
             <button className="btn btn-ghost" onClick={handleReset}>
               ↩ Mulai Ulang
             </button>
@@ -220,7 +358,7 @@ export default function App() {
       <div className="step-bar">
         {["upload", "transcript", "done"].map((s, i) => {
           const labels = ["Upload Video", "Pilih Segmen", "Hasil Clip"];
-          const current = step === "transcribing" ? 0 : step === "clipping" ? 2 : ["upload", "transcript", "done"].indexOf(step);
+          const current = (step === "upload" || step === "ready") ? 0 : step === "transcribing" ? 0 : step === "clipping" ? 2 : ["upload", "transcript", "done"].indexOf(step);
           return (
             <div key={s} className={`step-item ${i <= current ? "active" : ""}`}>
               <div className="step-num">{i + 1}</div>
@@ -251,23 +389,97 @@ export default function App() {
           <VideoUpload onSelect={handleVideoSelect} disabled={step === "transcribing"} />
         )}
 
+        {step === "ready" && (
+          <div className="ready-panel">
+            <div className="ready-video-row">
+              <span className="ready-video-icon">🎬</span>
+              <span className="ready-video-name" title={videoPath}>
+                {videoPath.split("/").pop()}
+              </span>
+              <button className="btn btn-ghost btn-sm" onClick={() => setStep("upload")}>
+                Ganti
+              </button>
+            </div>
+
+            <div className="ready-options">
+              <div className="ready-lang-row">
+                <label className="ready-lang-label">Bahasa sumber</label>
+                <select
+                  className="ready-lang-select"
+                  value={sourceLanguage}
+                  onChange={(e) => setSourceLanguage(e.target.value)}
+                >
+                  {WHISPER_LANGS.map((l) => (
+                    <option key={l.code} value={l.code}>{l.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="ready-lang-row">
+                <label className="ready-lang-label">Kecepatan</label>
+                <div className="preset-group">
+                  {([
+                    { value: "fast",     label: "Cepat",    hint: "Model tiny — tercepat, akurasi rendah" },
+                    { value: "balanced", label: "Seimbang", hint: "Model base — kecepatan & akurasi seimbang (rekomendasi)" },
+                    { value: "accurate", label: "Akurat",   hint: "Model medium (1.5GB) — akurasi tinggi" },
+                    { value: "best",     label: "Terbaik",  hint: "Model large-v3-turbo (1.6GB) — akurasi terbaik, cocok untuk bahasa campuran" },
+                  ] as const).map(p => (
+                    <button
+                      key={p.value}
+                      className={`preset-btn ${transcribePreset === p.value ? "active" : ""}`}
+                      onClick={() => setTranscribePreset(p.value)}
+                      title={p.hint}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <button
+              className="btn btn-primary ready-generate-btn"
+              onClick={startTranscription}
+            >
+              🎙 Generate Transkrip
+            </button>
+          </div>
+        )}
+
         {(step === "transcript") && (
           <TranscriptView
             segments={segments}
             selectedIndices={selectedIndices}
-            aiReasoning={aiReasoning}
+            sections={sections}
             burnSubtitles={burnSubtitles}
             aspectRatio={aspectRatio}
             onToggle={toggleSegment}
             onSelectAll={selectAll}
             onClearAll={clearAll}
-            onAiAnalyze={handleAiAnalyze}
+            onClassify={handleClassify}
+            onToggleSection={toggleSection}
             onClip={handleClip}
             onSaveSrt={handleSaveSrt}
             onBurnSubtitlesChange={setBurnSubtitles}
             onAspectRatioChange={setAspectRatio}
+            subtitleFontSize={subtitleFontSize}
+            subtitleFont={subtitleFont}
+            systemFonts={systemFonts}
+            onSubtitleFontSizeChange={setSubtitleFontSize}
+            onSubtitleFontChange={setSubtitleFont}
+            subtitleStyle={subtitleStyle}
+            onSubtitleStyleChange={setSubtitleStyle}
             loading={loading}
             videoPath={videoPath}
+            detectedLanguage={detectedLanguage}
+            translateTarget={translateTarget}
+            translateLangs={TRANSLATE_LANGS}
+            onTranslate={handleTranslate}
+            onTranslateTargetChange={setTranslateTarget}
+            llmModels={llmModels}
+            selectedLlm={selectedLlm}
+            onLlmChange={setSelectedLlm}
+            onManageModels={() => setShowModelManager(true)}
           />
         )}
 
@@ -279,6 +491,17 @@ export default function App() {
           />
         )}
       </main>
+
+      {showModelManager && (
+        <ModelManager
+          llmModels={llmModels}
+          selectedLlm={selectedLlm}
+          downloads={downloads}
+          onLlmChange={(m) => { setSelectedLlm(m); setShowModelManager(false); }}
+          onClose={() => setShowModelManager(false)}
+          onRefresh={refreshModels}
+        />
+      )}
     </div>
   );
 }

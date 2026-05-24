@@ -36,10 +36,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "../scripts/transcribe.py",
-      "../scripts/burn_subtitles.py"
-    ]
+    "resources": {
+      "../scripts/transcribe.py": "scripts/transcribe.py",
+      "../scripts/burn_subtitles.py": "scripts/burn_subtitles.py",
+      "vendor/bin/*": "vendor/bin/"
+    }
   },
   "plugins": {
     "shell": {
