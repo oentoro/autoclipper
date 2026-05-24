@@ -360,7 +360,7 @@ export default function TranscriptView({
                   alignItems: "center",
                 }}
               >
-                Teks Subtitle Contoh
+                {subtitleStyle.allCaps ? "TEKS SUBTITLE CONTOH" : "Teks Subtitle Contoh"}
                 {!previewReady && subtitleFont && (
                   <span className="font-preview-loading">memuat...</span>
                 )}
@@ -414,6 +414,16 @@ export default function TranscriptView({
                     </button>
                   ))}
                 </div>
+
+                {/* All caps */}
+                <label className="style-box-toggle">
+                  <input
+                    type="checkbox"
+                    checked={subtitleStyle.allCaps}
+                    onChange={e => onSubtitleStyleChange({ ...subtitleStyle, allCaps: e.target.checked })}
+                  />
+                  <span>HURUF KAPITAL SEMUA</span>
+                </label>
 
                 {/* Background box */}
                 <label className="style-box-toggle">

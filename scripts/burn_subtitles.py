@@ -128,8 +128,11 @@ def draw_subtitle(img, text, font, line_h, style):
     box_enabled = style.get("boxEnabled", False)
     box_rgb     = hex_to_rgb(style.get("boxColor", "#000000"))
     box_alpha   = int(style.get("boxOpacity", 70) / 100 * 255)
+    all_caps    = style.get("allCaps", False)
 
     for line in lines:
+        if all_caps:
+            line = line.upper()
         tw = int(draw.textlength(line, font=font))
         x = (w - tw) // 2
 

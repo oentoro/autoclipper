@@ -1063,6 +1063,7 @@ pub async fn transcribe_video(
     video_path: String,
     source_language: String,
     preset: String,
+    max_words_per_sub: u32,
 ) -> Result<TranscribeResult, String> {
     let vendor = vendor_dir(&app);
     let v = vendor.as_deref();
@@ -1077,6 +1078,10 @@ pub async fn transcribe_video(
     let preset = if preset.is_empty() { "balanced".to_string() } else { preset };
     args.push("--preset".to_string());
     args.push(preset);
+    if max_words_per_sub > 0 {
+        args.push("--max-words".to_string());
+        args.push(max_words_per_sub.to_string());
+    }
     if let Some(model_dir) = find_model_dir(v) {
         args.push("--model-dir".to_string());
         args.push(model_dir);

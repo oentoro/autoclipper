@@ -73,6 +73,7 @@ export interface SubtitleStyle {
   boxColor: string;
   boxOpacity: number;
   position: "top" | "center" | "bottom";
+  allCaps: boolean;
 }
 
 export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
@@ -83,6 +84,7 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   boxColor: "#000000",
   boxOpacity: 70,
   position: "bottom",
+  allCaps: false,
 };
 
 export interface DepCheck {

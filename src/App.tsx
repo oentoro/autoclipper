@@ -110,6 +110,7 @@ export default function App() {
   const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({});
   const [sourceLanguage, setSourceLanguage] = useState<string>("");
   const [transcribePreset, setTranscribePreset] = useState<string>("balanced");
+  const [maxWordsPerSub, setMaxWordsPerSub] = useState<number>(0);
   const [translateTarget, setTranslateTarget] = useState<string>("id");
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
@@ -136,6 +137,7 @@ export default function App() {
         videoPath,
         sourceLanguage,
         preset: transcribePreset,
+        maxWordsPerSub,
       });
       setSegments(result.segments);
       setSrtContent(result.srt_content);
@@ -428,6 +430,27 @@ export default function App() {
                       key={p.value}
                       className={`preset-btn ${transcribePreset === p.value ? "active" : ""}`}
                       onClick={() => setTranscribePreset(p.value)}
+                      title={p.hint}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="ready-lang-row">
+                <label className="ready-lang-label">Kata per subtitle</label>
+                <div className="preset-group">
+                  {([
+                    { value: 0, label: "Auto",   hint: "Ikuti segmen asli Whisper" },
+                    { value: 2, label: "2 kata",  hint: "Maks 2 kata per subtitle — sangat cepat" },
+                    { value: 3, label: "3 kata",  hint: "Maks 3 kata per subtitle — rekomendasi untuk Reels/Shorts" },
+                    { value: 5, label: "5 kata",  hint: "Maks 5 kata per subtitle" },
+                  ] as const).map(p => (
+                    <button
+                      key={p.value}
+                      className={`preset-btn ${maxWordsPerSub === p.value ? "active" : ""}`}
+                      onClick={() => setMaxWordsPerSub(p.value)}
                       title={p.hint}
                     >
                       {p.label}
