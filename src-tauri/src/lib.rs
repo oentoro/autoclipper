@@ -27,6 +27,7 @@ pub fn run() {
             clip_video,
             get_video_duration,
             reveal_in_file_manager,
+            install_dependency,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

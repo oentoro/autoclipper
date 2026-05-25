@@ -166,7 +166,37 @@ fn find_python(vendor: Option<&Path>) -> String {
     }
 
     #[cfg(target_os = "windows")]
-    { which("python").or_else(|| which("python3")).unwrap_or_else(|| "python.exe".to_string()) }
+    {
+        fn python_works(path: &str) -> bool {
+            Command::new(path).arg("--version").output()
+                .map(|o| o.status.success()).unwrap_or(false)
+        }
+
+        // `py` launcher installed by official Python / Chocolatey — most reliable
+        if let Some(py) = which("py") {
+            if python_works(&py) { return py; }
+        }
+
+        // Scan all `where python` results, skip Windows Store stub
+        if let Ok(out) = Command::new("where").arg("python").output() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let p = line.trim();
+                if p.is_empty() || p.contains("WindowsApps") { continue; }
+                if python_works(p) { return p.to_string(); }
+            }
+        }
+
+        // Common Chocolatey / official installer paths
+        for ver in ["314", "313", "312", "311", "310", "39", "38"] {
+            let path = format!("C:\\Python{}\\python.exe", ver);
+            if python_works(&path) { return path; }
+        }
+        if python_works("C:\\ProgramData\\chocolatey\\bin\\python.exe") {
+            return "C:\\ProgramData\\chocolatey\\bin\\python.exe".to_string();
+        }
+
+        "python.exe".to_string()
+    }
     #[cfg(not(target_os = "windows"))]
     { which("python3").unwrap_or_else(|| "python3".to_string()) }
 }
@@ -927,7 +957,13 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         "pip3",
     );
     #[cfg(target_os = "windows")]
-    let (py_install, ff_install, pip) = ("winget install Python.Python.3", "winget install ffmpeg", "pip");
+    let has_choco = which("choco").is_some();
+    #[cfg(target_os = "windows")]
+    let (py_install, ff_install, pip) = if has_choco {
+        ("choco install python -y", "choco install ffmpeg -y", "pip")
+    } else {
+        ("winget install Python.Python.3 -e --source winget", "winget install Gyan.FFmpeg -e --source winget", "pip")
+    };
 
     let mut checks: Vec<DepCheck> = Vec::new();
 
@@ -939,7 +975,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         ok: python_ok,
         path: if python_ok { Some(python.clone()) } else { None },
         error: if !python_ok { Some("Python 3 tidak ditemukan".to_string()) } else { None },
-        install_cmd: if !python_ok && !bundled { Some(py_install.to_string()) } else { None },
+        install_cmd: if !python_ok { Some(py_install.to_string()) } else { None },
         optional: false,
     });
 
@@ -951,7 +987,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         ok: ffmpeg_ok,
         path: if ffmpeg_ok { Some(ffmpeg.clone()) } else { None },
         error: if !ffmpeg_ok { Some("FFmpeg tidak ditemukan".to_string()) } else { None },
-        install_cmd: if !ffmpeg_ok && !bundled { Some(ff_install.to_string()) } else { None },
+        install_cmd: if !ffmpeg_ok { Some(ff_install.to_string()) } else { None },
         optional: false,
     });
 
@@ -963,7 +999,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         ok: ffprobe_ok,
         path: if ffprobe_ok { Some(ffprobe) } else { None },
         error: if !ffprobe_ok { Some("ffprobe tidak ditemukan".to_string()) } else { None },
-        install_cmd: if !ffprobe_ok && !bundled { Some(ff_install.to_string()) } else { None },
+        install_cmd: if !ffprobe_ok { Some(ff_install.to_string()) } else { None },
         optional: false,
     });
 
@@ -975,7 +1011,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         ok: whisper_ok,
         path: None,
         error: if !whisper_ok { Some("Package faster-whisper belum terinstall".to_string()) } else { None },
-        install_cmd: if !whisper_ok && !bundled { Some(format!("{pip} install faster-whisper")) } else { None },
+        install_cmd: if !whisper_ok { Some(format!("{pip} install faster-whisper")) } else { None },
         optional: false,
     });
 
@@ -987,7 +1023,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         ok: pillow_ok,
         path: None,
         error: if !pillow_ok { Some("Package Pillow belum terinstall".to_string()) } else { None },
-        install_cmd: if !pillow_ok && !bundled { Some(format!("{pip} install Pillow")) } else { None },
+        install_cmd: if !pillow_ok { Some(format!("{pip} install Pillow")) } else { None },
         optional: false,
     });
 
@@ -1005,15 +1041,16 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
 
     let llama_server_path = find_llama_server(&app);
     let llama_server_ok = llama_server_path.is_some();
+    let llama_script = find_script(&app, "download_llama_server.py");
     checks.push(DepCheck {
         name: "llama-server (AI Lokal)".to_string(),
         ok: llama_server_ok,
         path: llama_server_path,
         error: if !llama_server_ok {
-            Some("Binary llama-server tidak ditemukan. Jalankan: python3 scripts/download_llama_server.py".to_string())
+            Some(format!("Binary llama-server tidak ditemukan. Jalankan: {python} \"{llama_script}\""))
         } else { None },
         install_cmd: if !llama_server_ok {
-            Some("python3 scripts/download_llama_server.py".to_string())
+            Some(format!("{python} \"{llama_script}\""))
         } else { None },
         optional: true,
     });
@@ -1421,6 +1458,41 @@ pub async fn reveal_in_file_manager(path: String) -> Result<(), String> {
             .map_err(|e| format!("Gagal membuka file manager: {e}"))?;
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn install_dependency(install_cmd: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("powershell")
+            .args([
+                "-NoProfile", "-Command",
+                &format!(
+                    "Start-Process powershell -ArgumentList @('-NoExit','-Command','{}')",
+                    install_cmd.replace('\'', "''")
+                ),
+            ])
+            .spawn()
+            .map_err(|e| format!("Gagal membuka terminal: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "tell application \"Terminal\" to do script \"{}\"",
+            install_cmd.replace('"', "\\\"")
+        );
+        Command::new("osascript").args(["-e", &script]).spawn()
+            .map_err(|e| format!("Gagal membuka Terminal: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("x-terminal-emulator")
+            .args(["-e", "bash", "-c", &format!("{install_cmd}; read -p 'Selesai. Tekan Enter...'")]).spawn()
+            .or_else(|_| Command::new("xterm")
+                .args(["-e", "bash", "-c", &format!("{install_cmd}; read -p 'Selesai. Tekan Enter...'")]).spawn())
+            .map_err(|e| format!("Gagal membuka terminal: {e}"))?;
+    }
     Ok(())
 }
 

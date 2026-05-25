@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(cargo *)",
+      "PowerShell($env:PATH = [System.Environment]::GetEnvironmentVariable\\(\"PATH\", \"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"PATH\", \"User\"\\); where.exe dlltool 2>&1)",
+      "PowerShell(npm run *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(ffmpeg *)",
+      "PowerShell(Get-Process *)"
+    ]
+  }
+}
