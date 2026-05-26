@@ -468,13 +468,14 @@ fn build_classify_prompt(segments: &[SrtSegment]) -> String {
     let mins  = segments.last().map(|s| s.end as u64 / 60).unwrap_or(0);
     format!(
         "Transkrip video (~{mins} menit, segmen {first}\u{2013}{last}):\n\n{text}\n\n\
-Bagi menjadi 3\u{2013}7 bagian berurutan berdasarkan topik. \
+Bagi menjadi bagian-bagian berurutan berdasarkan topik. \
+Setiap bagian MAKSIMAL 60 detik (perhatikan timestamp untuk memastikan durasi). \
 Balas HANYA dengan JSON (tanpa teks lain):\n\
 {{\"sections\":[\
 {{\"name\":\"Pembukaan\",\"summary\":\"Ringkasan satu kalimat.\",\"start_index\":{first},\"end_index\":10}},\
 {{\"name\":\"Isi Utama\",\"summary\":\"Ringkasan satu kalimat.\",\"start_index\":11,\"end_index\":{last}}}\
 ]}}\n\
-Aturan: bagian berurutan, mencakup semua segmen, nama max 4 kata."
+Aturan: bagian berurutan, mencakup semua segmen, nama max 4 kata, durasi tiap bagian max 60 detik."
     )
 }
 
@@ -739,79 +740,102 @@ fn build_retimed_entries(groups: &[ClipGroup]) -> Vec<serde_json::Value> {
     entries
 }
 
+// Single group, no concat: stream copy (no crop) or transcode (with crop).
+// Stream copy is safe here because there is no concat demuxer step that could
+// mishandle timestamps.
 fn encode_one_group(
     ffmpeg: &str, video_path: &str, group: &ClipGroup,
     crop_filter: Option<&str>, dest: &str,
 ) -> Result<(), String> {
-    let s = group.start_sec;
-    let e = group.end_sec;
-    let trim_vf = format!("trim=start={s}:end={e},setpts=PTS-STARTPTS");
-    let fc = match crop_filter {
-        Some(crop) => format!(
-            "[0:v]{trim_vf},{crop}[v]; [0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a]"
-        ),
-        None => format!(
-            "[0:v]{trim_vf}[v]; [0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a]"
-        ),
+    let ss = group.start_sec.to_string();
+    let to = group.end_sec.to_string();
+
+    let status = if let Some(crop) = crop_filter {
+        Command::new(ffmpeg)
+            .args([
+                "-y",
+                "-ss", &ss, "-to", &to,   // fast input seek
+                "-i", video_path,
+                "-vf", crop,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-threads", "0",
+                "-c:a", "aac", "-b:a", "128k",
+                dest,
+            ])
+            .status()
+            .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?
+    } else {
+        Command::new(ffmpeg)
+            .args([
+                "-y",
+                "-ss", &ss, "-to", &to,
+                "-i", video_path,
+                "-c", "copy",
+                "-reset_timestamps", "1",
+                dest,
+            ])
+            .status()
+            .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?
     };
-    let status = Command::new(ffmpeg)
-        .args([
-            "-y", "-i", video_path,
-            "-filter_complex", &fc,
-            "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "128k",
-            dest,
-        ])
-        .status()
-        .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
+
     if status.success() { Ok(()) } else { Err("FFmpeg gagal mengekstrak klip.".to_string()) }
 }
 
+// Multiple groups: build ONE FFmpeg command with N inputs (each fast-seeked) and
+// a filter_complex concat. This produces correct timestamps without temp files
+// and avoids the 2x-speed bug caused by stream-copy + concat demuxer.
 fn concat_groups(
     ffmpeg: &str, video_path: &str, groups: &[ClipGroup],
     crop_filter: Option<&str>, dest: &str,
 ) -> Result<(), String> {
-    use std::io::Write;
-
-    // Single group → extract directly, no temp files needed
     if groups.len() == 1 {
         return encode_one_group(ffmpeg, video_path, &groups[0], crop_filter, dest);
     }
 
-    let tmp_dir = std::env::temp_dir().join("autoclipper_segs");
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("Gagal membuat folder temp: {e}"))?;
+    let n = groups.len();
+    let mut args: Vec<String> = vec!["-y".to_string()];
 
-    let mut seg_paths: Vec<PathBuf> = Vec::new();
-    for (i, group) in groups.iter().enumerate() {
-        let seg_path = tmp_dir.join(format!("s{i:04}.mp4"));
-        encode_one_group(ffmpeg, video_path, group, crop_filter, seg_path.to_str().unwrap())
-            .map_err(|e| {
-                for f in &seg_paths { let _ = std::fs::remove_file(f); }
-                let _ = std::fs::remove_dir_all(&tmp_dir);
-                format!("Grup {}: {e}", i + 1)
-            })?;
-        seg_paths.push(seg_path);
+    // One input per group, each with fast input seek
+    for group in groups {
+        args.extend([
+            "-ss".to_string(), group.start_sec.to_string(),
+            "-to".to_string(), group.end_sec.to_string(),
+            "-i".to_string(),  video_path.to_string(),
+        ]);
     }
 
-    let list_path = tmp_dir.join("list.txt");
-    {
-        let mut f = std::fs::File::create(&list_path)
-            .map_err(|e| format!("Gagal membuat concat list: {e}"))?;
-        for p in &seg_paths {
-            writeln!(f, "file '{}'", p.to_str().unwrap().replace('\'', r"'\''"))
-                .map_err(|e| format!("Gagal menulis list: {e}"))?;
-        }
-    }
+    // Build filter_complex: optionally crop each video stream, then concat all
+    let filter = if let Some(crop) = crop_filter {
+        let crops: String = (0..n)
+            .map(|i| format!("[{i}:v]{crop}[v{i}]"))
+            .collect::<Vec<_>>().join("; ");
+        let inputs: String = (0..n)
+            .map(|i| format!("[v{i}][{i}:a]"))
+            .collect::<Vec<_>>().join("");
+        format!("{crops}; {inputs}concat=n={n}:v=1:a=1[v][a]")
+    } else {
+        let inputs: String = (0..n)
+            .map(|i| format!("[{i}:v][{i}:a]"))
+            .collect::<Vec<_>>().join("");
+        format!("{inputs}concat=n={n}:v=1:a=1[v][a]")
+    };
+
+    args.extend([
+        "-filter_complex".to_string(), filter,
+        "-map".to_string(), "[v]".to_string(),
+        "-map".to_string(), "[a]".to_string(),
+        "-c:v".to_string(), "libx264".to_string(),
+        "-preset".to_string(), "fast".to_string(),
+        "-crf".to_string(), "23".to_string(),
+        "-threads".to_string(), "0".to_string(),  // all cores for this one encode pass
+        "-c:a".to_string(), "aac".to_string(),
+        "-b:a".to_string(), "128k".to_string(),
+        dest.to_string(),
+    ]);
+
     let status = Command::new(ffmpeg)
-        .args(["-y", "-f", "concat", "-safe", "0",
-               "-i", list_path.to_str().unwrap(), "-c", "copy", dest])
+        .args(&args)
         .status()
         .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
-
-    for f in &seg_paths { let _ = std::fs::remove_file(f); }
-    let _ = std::fs::remove_file(&list_path);
-    let _ = std::fs::remove_dir(&tmp_dir);
 
     if status.success() { Ok(()) } else { Err("FFmpeg gagal menggabungkan klip.".to_string()) }
 }
@@ -1213,6 +1237,52 @@ pub async fn analyze_transcript(
 }
 
 #[tauri::command]
+// Split any section whose actual duration (from segments) exceeds max_sec into
+// consecutive sub-sections. Each sub-section gets a numbered suffix in its name.
+fn split_long_sections(sections: Vec<Section>, segments: &[SrtSegment], max_sec: f64) -> Vec<Section> {
+    let mut result = Vec::new();
+
+    for section in sections {
+        let segs: Vec<&SrtSegment> = segments.iter()
+            .filter(|s| s.index >= section.start_index && s.index <= section.end_index)
+            .collect();
+
+        if segs.is_empty() {
+            result.push(section);
+            continue;
+        }
+
+        let total_dur = segs.last().unwrap().end - segs.first().unwrap().start;
+        if total_dur <= max_sec {
+            result.push(section);
+            continue;
+        }
+
+        // Walk through segments, closing a sub-section when adding the next one
+        // would exceed max_sec from the current sub-section's start.
+        let mut i = 0;
+        let mut part = 1usize;
+        while i < segs.len() {
+            let chunk_start = segs[i].start;
+            let mut j = i;
+            while j + 1 < segs.len() && segs[j + 1].end - chunk_start <= max_sec {
+                j += 1;
+            }
+            result.push(Section {
+                name:        format!("{} ({})", section.name, part),
+                summary:     section.summary.clone(),
+                start_index: segs[i].index,
+                end_index:   segs[j].index,
+            });
+            i = j + 1;
+            part += 1;
+        }
+    }
+
+    result
+}
+
+#[tauri::command]
 pub async fn classify_transcript(
     app: tauri::AppHandle,
     server: tauri::State<'_, LlamaServerState>,
@@ -1239,6 +1309,9 @@ pub async fn classify_transcript(
     if let Some(last) = result.sections.last_mut() {
         last.end_index = last_idx;
     }
+
+    // Guarantee every section is ≤ 60 seconds regardless of what the AI produced
+    result.sections = split_long_sections(result.sections, &segments, 60.0);
 
     Ok(result)
 }

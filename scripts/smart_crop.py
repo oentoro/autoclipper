@@ -23,8 +23,18 @@ except ImportError as _e:
     sys.exit(1)
 
 
-def detect_face_cx(frame, cascade):
-    """Return horizontal center-x of the sharpest (most in-focus) face, or None."""
+def detect_face_cx(frame, prev_frame, cascade):
+    """
+    Return horizontal center-x of the active speaker, or None.
+
+    Priority:
+    1. Mouth motion (absdiff between consecutive sampled frames) — detects the
+       face whose jaw/lips are moving, i.e. who is currently speaking.
+       Works even when that face is slightly blurred (bokeh) because jaw movement
+       still produces intensity changes across frames.
+    2. Sharpness fallback — used when no clear speaker signal exists (silence,
+       first frame, or only one face detected).
+    """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     min_dim = max(30, min(w, h) // 10)
@@ -37,11 +47,66 @@ def detect_face_cx(frame, cascade):
 
     def sharpness(face):
         fx, fy, fw, fh = face
-        roi = gray[fy:fy + fh, fx:fx + fw]
-        return cv2.Laplacian(roi, cv2.CV_64F).var()
+        return cv2.Laplacian(gray[fy:fy + fh, fx:fx + fw], cv2.CV_64F).var()
 
+    if len(faces) == 1:
+        x, y, fw, fh = faces[0]
+        return x + fw // 2
+
+    # ── Mouth-motion scoring ──────────────────────────────────────────────────
+    if prev_frame is not None:
+        prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+
+        def mouth_motion(face):
+            fx, fy, fw, fh = face
+            # Mouth region: lower 30% of the face bounding box
+            my = fy + int(fh * 0.65)
+            mh = max(1, int(fh * 0.30))
+            curr = gray[my:my + mh, fx:fx + fw]
+            prev = prev_gray[my:my + mh, fx:fx + fw]
+            if curr.size == 0:
+                return 0.0
+            return float(cv2.absdiff(curr, prev).mean())
+
+        motions = [(face, mouth_motion(face)) for face in faces]
+        top  = max(motions, key=lambda t: t[1])
+        rest = [m for _, m in motions if _ is not top[0]]
+        avg_rest = sum(rest) / len(rest) if rest else 0.0
+
+        # Clear speaker: top motion > 1 px mean AND > 2× the average of others
+        if top[1] > 1.0 and top[1] > avg_rest * 2.0:
+            x, y, fw, fh = top[0]
+            return x + fw // 2
+
+    # ── Sharpness fallback (silence or first frame) ───────────────────────────
     x, y, fw, fh = max(faces, key=sharpness)
     return x + fw // 2
+
+
+def smooth_adaptive(arr, fps, src_w):
+    """
+    EMA smoothing with two modes:
+    - Slow (0.5s time constant): stable tracking, suppresses camera jitter.
+    - Fast (0.08s time constant): near-instant on focus pulls (face position
+      jumps > 15% of frame width), so the crop follows the newly focused subject
+      within 2-3 frames instead of waiting 2 seconds.
+    """
+    if len(arr) == 0:
+        return arr
+
+    result = np.empty_like(arr)
+    result[0] = arr[0]
+
+    alpha_slow = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.5))
+    alpha_fast = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.08))
+    focus_pull_threshold = src_w * 0.15  # 15% of frame width
+
+    for i in range(1, len(arr)):
+        delta = abs(arr[i] - result[i - 1])
+        alpha = alpha_fast if delta > focus_pull_threshold else alpha_slow
+        result[i] = alpha * arr[i] + (1.0 - alpha) * result[i - 1]
+
+    return result.astype(int)
 
 
 def analyze_faces(video_path, crop_w, src_w, fps):
@@ -52,10 +117,11 @@ def analyze_faces(video_path, crop_w, src_w, fps):
     cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     cascade = cv2.CascadeClassifier(cascade_path)
 
-    # Sample ~2 frames per second for face detection
-    every = max(1, int(fps / 2))
+    # Sample ~4fps for fast focus/speaker-change detection
+    every = max(1, int(fps / 4))
     default_cx = src_w // 2
     last_cx = default_cx
+    prev_frame = None  # previous sampled frame for mouth-motion comparison
 
     raw_cx = []
     cap = cv2.VideoCapture(video_path)
@@ -66,9 +132,10 @@ def analyze_faces(video_path, crop_w, src_w, fps):
             ret, frame = cap.read()
             if not ret:
                 break
-            detected = detect_face_cx(frame, cascade)
+            detected = detect_face_cx(frame, prev_frame, cascade)
             if detected is not None:
                 last_cx = detected
+            prev_frame = frame
         else:
             if not cap.grab():
                 break
@@ -80,11 +147,8 @@ def analyze_faces(video_path, crop_w, src_w, fps):
     if not raw_cx:
         return [max(0, default_cx - crop_w // 2)]
 
-    # Smooth over ~2-second window to prevent jitter
-    window = max(3, int(fps * 2))
     arr = np.array(raw_cx, dtype=float)
-    kernel = np.ones(window) / window
-    smoothed = np.convolve(arr, kernel, mode="same").astype(int)
+    smoothed = smooth_adaptive(arr, fps, src_w)
 
     # Clamp face center to valid range, then compute top-left crop x
     min_cx = crop_w // 2
