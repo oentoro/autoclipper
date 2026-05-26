@@ -15,9 +15,10 @@ $ExtraConfig = @{
         resources = @(
             "../scripts/transcribe.py"
             "../scripts/burn_subtitles.py"
+            "../scripts/smart_crop.py"
+            "../scripts/download_llama_server.py"
             "vendor/python/**/*"
-            "vendor/bin/ffmpeg.exe"
-            "vendor/bin/ffprobe.exe"
+            "vendor/bin/**"
             "vendor/models/**/*"
         )
     }

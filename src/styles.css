@@ -1415,6 +1415,54 @@ body {
   border: 1px solid rgba(108,99,255,0.3);
 }
 
+/* ─── Smart Crop ─────────────────────────────────────────────────────────── */
+
+.smart-crop-block {
+  padding-top: 0 !important;
+  border-top: none !important;
+}
+
+.smart-crop-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.smart-crop-toggle input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.smart-crop-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.smart-crop-icon {
+  font-size: 14px;
+}
+
+.smart-crop-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.smart-crop-note {
+  margin: 6px 0 0 23px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
 /* ─── License Gate ────────────────────────────────────────────────────────── */
 
 .license-gate {

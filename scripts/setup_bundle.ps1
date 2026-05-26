@@ -38,17 +38,27 @@ if (-not (Test-Path "$Vendor\python\python.exe")) {
 $BundledPy = "$Vendor\python\python.exe"
 
 # ── Python packages ───────────────────────────────────────────────────────────
-Write-Host "[2/4] Installing faster-whisper + Pillow..."
+Write-Host "[2/5] Installing faster-whisper + Pillow + opencv-python..."
 & $BundledPy -m pip install --quiet --upgrade pip
-& $BundledPy -m pip install --quiet faster-whisper Pillow
+& $BundledPy -m pip install --quiet faster-whisper Pillow opencv-python
 Write-Host "  [OK] Packages installed"
+
+# ── llama-server ──────────────────────────────────────────────────────────────
+$LlamaBin = "$Vendor\bin\llama-server.exe"
+if (Test-Path $LlamaBin) {
+    Write-Host "[3/5] llama-server already bundled - skip"
+} else {
+    Write-Host "[3/5] Downloading llama-server..."
+    & $BundledPy "$ScriptDir\download_llama_server.py"
+    Write-Host "  [OK] llama-server installed"
+}
 
 # ── Whisper model ─────────────────────────────────────────────────────────────
 $ModelMarker = "$Vendor\models\models--Systran--faster-whisper-small"
 if (Test-Path $ModelMarker) {
-    Write-Host "[3/4] Whisper model already downloaded - skip"
+    Write-Host "[4/5] Whisper model already downloaded - skip"
 } else {
-    Write-Host "[3/4] Downloading Whisper 'small' model (~244 MB)..."
+    Write-Host "[4/5] Downloading Whisper 'small' model (~244 MB)..."
     $VendorModels = "$Vendor\models" -replace "\\", "\\\\"
     & $BundledPy -c @"
 from faster_whisper import WhisperModel
@@ -59,9 +69,9 @@ print('  [OK] Model downloaded')
 
 # ── FFmpeg (gyan.dev Windows essentials build) ───────────────────────────────
 if ((Test-Path "$Vendor\bin\ffmpeg.exe") -and (Test-Path "$Vendor\bin\ffprobe.exe")) {
-    Write-Host "[4/4] FFmpeg already bundled - skip"
+    Write-Host "[5/5] FFmpeg already bundled - skip"
 } else {
-    Write-Host "[4/4] Downloading FFmpeg for Windows..."
+    Write-Host "[5/5] Downloading FFmpeg for Windows..."
     $FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
     $TmpZip    = "$env:TEMP\autoclipper_ffmpeg.zip"
     $TmpExtract = "$env:TEMP\autoclipper_ffmpeg_extract"

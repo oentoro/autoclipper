@@ -10,7 +10,19 @@
       "Bash(rtk wc *)",
       "Bash(rtk read *)",
       "Bash(rtk tsc *)",
-      "Bash(rtk cargo *)"
+      "Bash(rtk cargo *)",
+      "Bash(rtk ls *)",
+      "Bash(python3 -c \"import cv2; print\\('cv2 OK'\\)\")",
+      "Bash(rtk pip *)",
+      "Bash(python3 -m pip install opencv-python)",
+      "Bash(python3 -m pip install opencv-python --user)",
+      "Bash(python3 -m pip install opencv-python --break-system-packages)",
+      "Bash(python3 *)",
+      "Bash(rtk npm *)",
+      "Bash(xargs kill -9)",
+      "Bash(pkill -f \"tauri dev\")",
+      "Bash(pkill -f \"cargo run\")",
+      "Bash(rtk grep *)"
     ]
   }
 }

@@ -23,6 +23,7 @@ interface Props {
   sections: Section[];
   burnSubtitles: boolean;
   aspectRatio: string;
+  smartCrop: boolean;
   onToggle: (index: number) => void;
   onSelectAll: () => void;
   onClearAll: () => void;
@@ -32,6 +33,7 @@ interface Props {
   onSaveSrt: () => void;
   onBurnSubtitlesChange: (v: boolean) => void;
   onAspectRatioChange: (v: string) => void;
+  onSmartCropChange: (v: boolean) => void;
   subtitleFontSize: number;
   subtitleFont: string;
   systemFonts: FontInfo[];
@@ -73,6 +75,7 @@ export default function TranscriptView({
   sections,
   burnSubtitles,
   aspectRatio,
+  smartCrop,
   onToggle,
   onSelectAll,
   onClearAll,
@@ -82,6 +85,7 @@ export default function TranscriptView({
   onSaveSrt,
   onBurnSubtitlesChange,
   onAspectRatioChange,
+  onSmartCropChange,
   subtitleFontSize,
   subtitleFont,
   systemFonts,
@@ -295,6 +299,29 @@ export default function TranscriptView({
             })}
           </div>
         </div>
+
+        {/* Smart Crop — only visible when aspect ratio is not original */}
+        {aspectRatio !== "original" && (
+          <div className="sidebar-block smart-crop-block">
+            <label className="smart-crop-toggle">
+              <input
+                type="checkbox"
+                checked={smartCrop}
+                onChange={e => onSmartCropChange(e.target.checked)}
+              />
+              <span className="smart-crop-label">
+                <span className="smart-crop-icon">🎯</span>
+                Smart Crop
+                <span className="smart-crop-hint">Ikuti pembicara</span>
+              </span>
+            </label>
+            {smartCrop && (
+              <p className="smart-crop-note">
+                Deteksi wajah otomatis · proses lebih lama
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Subtitle */}
         <div className="sidebar-block">

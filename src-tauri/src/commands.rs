@@ -680,65 +680,120 @@ fn build_crop_filter(ratio: &str, src_w: u32, src_h: u32) -> Option<String> {
     Some(format!("crop={crop_w}:{crop_h}:{cx}:{cy}"))
 }
 
-fn build_retimed_entries(selected: &[&SrtSegment]) -> Vec<serde_json::Value> {
+// ─── Clip grouping ────────────────────────────────────────────────────────────
+//
+// Consecutive segments (gap ≤ 0.5 s) are merged into a single extraction range.
+// This avoids re-encoding at every segment boundary, which was the root cause of
+// stutters when selecting sequential clips. Each group is extracted as ONE clip
+// with whole-second boundaries (floor start, ceil end) for stable keyframe alignment.
+
+struct ClipGroup<'a> {
+    segs: Vec<&'a SrtSegment>,
+    start_sec: i64, // floor(first.start)
+    end_sec: i64,   // ceil(last.end), always > start_sec
+}
+
+impl ClipGroup<'_> {
+    fn duration(&self) -> f64 { (self.end_sec - self.start_sec) as f64 }
+}
+
+fn group_segments<'a>(selected: &[&'a SrtSegment]) -> Vec<ClipGroup<'a>> {
+    const GAP: f64 = 0.5;
+    if selected.is_empty() { return Vec::new(); }
+
+    let mut groups: Vec<ClipGroup<'a>> = Vec::new();
+    let mut cur: Vec<&'a SrtSegment> = vec![selected[0]];
+
+    for seg in &selected[1..] {
+        if seg.start - cur.last().unwrap().end <= GAP {
+            cur.push(seg);
+        } else {
+            let s = cur.first().unwrap().start.floor() as i64;
+            let e = (cur.last().unwrap().end.ceil() as i64).max(s + 1);
+            groups.push(ClipGroup { segs: cur, start_sec: s, end_sec: e });
+            cur = vec![seg];
+        }
+    }
+    let s = cur.first().unwrap().start.floor() as i64;
+    let e = (cur.last().unwrap().end.ceil() as i64).max(s + 1);
+    groups.push(ClipGroup { segs: cur, start_sec: s, end_sec: e });
+    groups
+}
+
+// Subtitle entries retimed to the merged clip timeline.
+// Each segment's position inside its group is preserved exactly; groups are
+// placed back-to-back in the merged clip.
+fn build_retimed_entries(groups: &[ClipGroup]) -> Vec<serde_json::Value> {
     let mut entries = Vec::new();
     let mut cursor = 0.0_f64;
-    for seg in selected.iter() {
-        let dur = seg.end - seg.start;
-        entries.push(serde_json::json!({ "start": cursor, "end": cursor + dur, "text": seg.text }));
-        cursor += dur;
+    for group in groups {
+        let g_start = group.start_sec as f64;
+        let g_dur   = group.duration();
+        for seg in &group.segs {
+            let sub_start = (cursor + (seg.start - g_start)).max(0.0);
+            let sub_end   = (cursor + (seg.end   - g_start)).min(cursor + g_dur);
+            entries.push(serde_json::json!({ "start": sub_start, "end": sub_end, "text": seg.text }));
+        }
+        cursor += g_dur;
     }
     entries
 }
 
-fn concat_segments(
-    ffmpeg: &str, video_path: &str, selected: &[&SrtSegment],
+fn encode_one_group(
+    ffmpeg: &str, video_path: &str, group: &ClipGroup,
+    crop_filter: Option<&str>, dest: &str,
+) -> Result<(), String> {
+    let s = group.start_sec;
+    let e = group.end_sec;
+    let trim_vf = format!("trim=start={s}:end={e},setpts=PTS-STARTPTS");
+    let fc = match crop_filter {
+        Some(crop) => format!(
+            "[0:v]{trim_vf},{crop}[v]; [0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a]"
+        ),
+        None => format!(
+            "[0:v]{trim_vf}[v]; [0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a]"
+        ),
+    };
+    let status = Command::new(ffmpeg)
+        .args([
+            "-y", "-i", video_path,
+            "-filter_complex", &fc,
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            dest,
+        ])
+        .status()
+        .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
+    if status.success() { Ok(()) } else { Err("FFmpeg gagal mengekstrak klip.".to_string()) }
+}
+
+fn concat_groups(
+    ffmpeg: &str, video_path: &str, groups: &[ClipGroup],
     crop_filter: Option<&str>, dest: &str,
 ) -> Result<(), String> {
     use std::io::Write;
+
+    // Single group → extract directly, no temp files needed
+    if groups.len() == 1 {
+        return encode_one_group(ffmpeg, video_path, &groups[0], crop_filter, dest);
+    }
 
     let tmp_dir = std::env::temp_dir().join("autoclipper_segs");
     std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("Gagal membuat folder temp: {e}"))?;
 
     let mut seg_paths: Vec<PathBuf> = Vec::new();
-
-    // Pass 1: encode each segment to its own file so every clip starts with an I-frame
-    for (i, seg) in selected.iter().enumerate() {
+    for (i, group) in groups.iter().enumerate() {
         let seg_path = tmp_dir.join(format!("s{i:04}.mp4"));
-        let trim_vf = format!(
-            "trim=start={:.6}:end={:.6},setpts=PTS-STARTPTS",
-            seg.start, seg.end
-        );
-        let fc = match crop_filter {
-            Some(crop) => format!(
-                "[0:v]{trim_vf},{crop}[v]; [0:a]atrim=start={:.6}:end={:.6},asetpts=PTS-STARTPTS[a]",
-                seg.start, seg.end
-            ),
-            None => format!(
-                "[0:v]{trim_vf}[v]; [0:a]atrim=start={:.6}:end={:.6},asetpts=PTS-STARTPTS[a]",
-                seg.start, seg.end
-            ),
-        };
-        let status = Command::new(ffmpeg)
-            .args([
-                "-y", "-i", video_path,
-                "-filter_complex", &fc,
-                "-map", "[v]", "-map", "[a]",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
-                seg_path.to_str().unwrap(),
-            ])
-            .status()
-            .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
-        if !status.success() {
-            for f in &seg_paths { let _ = std::fs::remove_file(f); }
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err(format!("FFmpeg gagal mengekstrak segmen {}.", i + 1));
-        }
+        encode_one_group(ffmpeg, video_path, group, crop_filter, seg_path.to_str().unwrap())
+            .map_err(|e| {
+                for f in &seg_paths { let _ = std::fs::remove_file(f); }
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                format!("Grup {}: {e}", i + 1)
+            })?;
         seg_paths.push(seg_path);
     }
 
-    // Pass 2: concat demuxer (-c copy) — no re-encode, no frame gaps
     let list_path = tmp_dir.join("list.txt");
     {
         let mut f = std::fs::File::create(&list_path)
@@ -749,11 +804,8 @@ fn concat_segments(
         }
     }
     let status = Command::new(ffmpeg)
-        .args([
-            "-y", "-f", "concat", "-safe", "0",
-            "-i", list_path.to_str().unwrap(),
-            "-c", "copy", dest,
-        ])
+        .args(["-y", "-f", "concat", "-safe", "0",
+               "-i", list_path.to_str().unwrap(), "-c", "copy", dest])
         .status()
         .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
 
@@ -761,7 +813,7 @@ fn concat_segments(
     let _ = std::fs::remove_file(&list_path);
     let _ = std::fs::remove_dir(&tmp_dir);
 
-    if status.success() { Ok(()) } else { Err("FFmpeg gagal menggabungkan segmen.".to_string()) }
+    if status.success() { Ok(()) } else { Err("FFmpeg gagal menggabungkan klip.".to_string()) }
 }
 
 // ─── Translation helpers ──────────────────────────────────────────────────────
@@ -1055,6 +1107,18 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         optional: true,
     });
 
+    let opencv_ok = python_ok && Command::new(&python)
+        .args(["-c", "import cv2"])
+        .output().map(|o| o.status.success()).unwrap_or(false);
+    checks.push(DepCheck {
+        name: format!("opencv-python (Smart Crop)"),
+        ok: opencv_ok,
+        path: None,
+        error: if !opencv_ok { Some("opencv-python belum terinstall — diperlukan untuk Smart Crop".to_string()) } else { None },
+        install_cmd: if !opencv_ok { Some(format!("{pip} install opencv-python")) } else { None },
+        optional: true,
+    });
+
     let ollama_ok = reqwest::Client::new()
         .get("http://localhost:11434/api/tags")
         .timeout(std::time::Duration::from_secs(3))
@@ -1188,6 +1252,7 @@ pub async fn clip_video(
     output_path: String,
     burn_subtitles: bool,
     aspect_ratio: String,
+    smart_crop: bool,
     font_size: u32,
     font_path: String,
     subtitle_style_json: String,
@@ -1203,27 +1268,43 @@ pub async fn clip_video(
     if selected.is_empty() { return Err("Tidak ada segmen yang dipilih".to_string()); }
     selected.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
 
-    let total_duration: f64 = selected.iter().map(|s| s.end - s.start).sum();
     let total_segments = selected.len();
+    let total_duration: f64 = selected.iter().map(|s| s.end - s.start).sum();
 
-    let crop_filter = if aspect_ratio != "original" {
+    let groups = group_segments(&selected);
+
+    // Smart crop: skip FFmpeg center crop; let smart_crop.py handle it instead
+    let needs_smart = smart_crop && aspect_ratio != "original";
+    let ffmpeg_crop = if needs_smart || aspect_ratio == "original" {
+        None
+    } else {
         let (w, h) = get_video_dims(&video_path, v)?;
         build_crop_filter(&aspect_ratio, w, h)
-    } else { None };
+    };
 
-    if burn_subtitles {
-        let tmp_path = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
-        let tmp_str = tmp_path.to_string_lossy().to_string();
-        concat_segments(&ffmpeg, &video_path, &selected, crop_filter.as_deref(), &tmp_str)?;
+    // Helper: run smart_crop.py on `input`, write to `output`
+    let run_smart_crop = |input: &str, output: &str| -> Result<(), String> {
+        let script = find_script(&app, "smart_crop.py");
+        let out = Command::new(&python)
+            .args([&script, input, output, "--ratio", &aspect_ratio])
+            .env("AUTOCLIPPER_FFMPEG", &ffmpeg)
+            .output()
+            .map_err(|e| format!("Gagal menjalankan smart_crop.py: {e}"))?;
+        if out.status.success() { Ok(()) } else {
+            Err(format!("Smart crop gagal:\n{}", String::from_utf8_lossy(&out.stderr)))
+        }
+    };
 
-        let entries = build_retimed_entries(&selected);
+    // Helper: run burn_subtitles.py on `input`, write to `output_path`
+    let run_burn_subs = |input: &str| -> Result<(), String> {
+        let entries = build_retimed_entries(&groups);
         let entries_path = std::env::temp_dir().join("autoclipper_entries.json");
         std::fs::write(&entries_path, serde_json::to_string(&entries).unwrap())
             .map_err(|e| format!("Gagal menulis entries JSON: {e}"))?;
 
         let script = find_script(&app, "burn_subtitles.py");
         let entries_str = entries_path.to_string_lossy().to_string();
-        let mut burn_args = vec![script, tmp_str.clone(), entries_str, output_path.clone()];
+        let mut burn_args = vec![script, input.to_string(), entries_str, output_path.clone()];
         if font_size > 0 {
             burn_args.push("--font-size".to_string());
             burn_args.push(font_size.to_string());
@@ -1242,23 +1323,64 @@ pub async fn clip_video(
             .env("AUTOCLIPPER_FFPROBE", &ffprobe)
             .output()
             .map_err(|e| format!("Gagal menjalankan burn_subtitles.py: {e}"))?;
-
-        let _ = std::fs::remove_file(&tmp_path);
         let _ = std::fs::remove_file(&entries_path);
-
-        if !out.status.success() {
-            return Err(format!("Subtitle burn gagal: {}", String::from_utf8_lossy(&out.stderr)));
+        if out.status.success() { Ok(()) } else {
+            Err(format!("Subtitle burn gagal: {}", String::from_utf8_lossy(&out.stderr)))
         }
-    } else {
-        concat_segments(&ffmpeg, &video_path, &selected, crop_filter.as_deref(), &output_path)?;
+    };
+
+    match (burn_subtitles, needs_smart) {
+        // ── Case 1: no burn, no smart crop ────────────────────────────────
+        (false, false) => {
+            concat_groups(&ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), &output_path)?;
+        }
+
+        // ── Case 2: burn only, no smart crop ──────────────────────────────
+        (true, false) => {
+            let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
+            concat_groups(&ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), tmp.to_str().unwrap())?;
+            let r = run_burn_subs(tmp.to_str().unwrap());
+            let _ = std::fs::remove_file(&tmp);
+            r?;
+        }
+
+        // ── Case 3: smart crop only, no burn ──────────────────────────────
+        (false, true) => {
+            let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
+            concat_groups(&ffmpeg, &video_path, &groups, None, tmp.to_str().unwrap())?;
+            let r = run_smart_crop(tmp.to_str().unwrap(), &output_path);
+            let _ = std::fs::remove_file(&tmp);
+            r?;
+        }
+
+        // ── Case 4: smart crop + burn ─────────────────────────────────────
+        (true, true) => {
+            let tmp_concat = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
+            let tmp_smart  = std::env::temp_dir().join("autoclipper_smart_tmp.mp4");
+            concat_groups(&ffmpeg, &video_path, &groups, None, tmp_concat.to_str().unwrap())?;
+            let r = run_smart_crop(tmp_concat.to_str().unwrap(), tmp_smart.to_str().unwrap());
+            let _ = std::fs::remove_file(&tmp_concat);
+            r?;
+            let r = run_burn_subs(tmp_smart.to_str().unwrap());
+            let _ = std::fs::remove_file(&tmp_smart);
+            r?;
+        }
     }
 
-    let ar_note = if aspect_ratio != "original" { format!(" [{aspect_ratio}]") } else { String::new() };
+    let ar_note = if aspect_ratio != "original" {
+        if needs_smart { format!(" [{aspect_ratio} smart]") } else { format!(" [{aspect_ratio}]") }
+    } else { String::new() };
     let sub_note = if burn_subtitles { " + subtitle" } else { "" };
+    let group_note = if groups.len() < total_segments {
+        format!(" ({} grup)", groups.len())
+    } else { String::new() };
     Ok(ClipResult {
         output_path,
         success: true,
-        message: format!("Berhasil menggabungkan {total_segments} segmen ({:.1}s total){sub_note}{ar_note}", total_duration),
+        message: format!(
+            "Berhasil menggabungkan {total_segments} segmen{group_note} ({:.1}s){sub_note}{ar_note}",
+            total_duration
+        ),
         total_segments,
         duration_secs: total_duration,
     })

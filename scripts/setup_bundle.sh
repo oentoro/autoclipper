@@ -53,17 +53,27 @@ fi
 BUNDLED_PY="$VENDOR/python/bin/python3"
 
 # ── Python packages ───────────────────────────────────────────────────────────
-echo "[2/4] Installing faster-whisper + Pillow..."
+echo "[2/5] Installing Python packages..."
 "$BUNDLED_PY" -m pip install --quiet --upgrade pip
-"$BUNDLED_PY" -m pip install --quiet faster-whisper Pillow
+"$BUNDLED_PY" -m pip install --quiet faster-whisper Pillow opencv-python
 echo "  ✓ Packages installed"
+
+# ── llama-server ─────────────────────────────────────────────────────────────
+LLAMA_BIN="$VENDOR/bin/llama-server"
+if [ -f "$LLAMA_BIN" ]; then
+  echo "[3/5] llama-server already bundled — skip"
+else
+  echo "[3/5] Downloading llama-server..."
+  "$BUNDLED_PY" "$SCRIPT_DIR/download_llama_server.py"
+  echo "  ✓ llama-server installed"
+fi
 
 # ── Whisper model ─────────────────────────────────────────────────────────────
 MODEL_MARKER="$VENDOR/models/models--Systran--faster-whisper-small"
 if [ -d "$MODEL_MARKER" ]; then
-  echo "[3/4] Whisper model already downloaded — skip"
+  echo "[4/5] Whisper model already downloaded — skip"
 else
-  echo "[3/4] Downloading Whisper 'small' model (~244 MB)..."
+  echo "[4/5] Downloading Whisper 'small' model (~244 MB)..."
   "$BUNDLED_PY" - <<PYEOF
 from faster_whisper import WhisperModel
 WhisperModel("small", device="cpu", compute_type="int8", download_root="$VENDOR/models")
@@ -73,9 +83,9 @@ fi
 
 # ── FFmpeg ────────────────────────────────────────────────────────────────────
 if [ -f "$VENDOR/bin/ffmpeg" ] && [ -f "$VENDOR/bin/ffprobe" ]; then
-  echo "[4/4] FFmpeg already bundled — skip"
+  echo "[5/5] FFmpeg already bundled — skip"
 else
-  echo "[4/4] Downloading FFmpeg static build..."
+  echo "[5/5] Downloading FFmpeg static build..."
   TMP=$(mktemp -d)
   trap "rm -rf '$TMP'" EXIT
 

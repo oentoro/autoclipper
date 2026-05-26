@@ -112,6 +112,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [clipResult, setClipResult] = useState<ClipResult | null>(null);
   const [burnSubtitles, setBurnSubtitles] = useState<boolean>(true);
   const [aspectRatio, setAspectRatio] = useState<string>("original");
+  const [smartCrop, setSmartCrop] = useState<boolean>(false);
   const [subtitleFontSize, setSubtitleFontSize] = useState<number>(0);
   const [subtitleFont, setSubtitleFont] = useState<string>("");
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
@@ -277,6 +278,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         outputPath: outputPath as string,
         burnSubtitles,
         aspectRatio,
+        smartCrop,
         fontSize: subtitleFontSize,
         fontPath: subtitleFont,
         subtitleStyleJson: JSON.stringify(subtitleStyle),
@@ -505,7 +507,9 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             onClip={handleClip}
             onSaveSrt={handleSaveSrt}
             onBurnSubtitlesChange={setBurnSubtitles}
-            onAspectRatioChange={setAspectRatio}
+            onAspectRatioChange={(v) => { setAspectRatio(v); if (v === "original") setSmartCrop(false); }}
+            smartCrop={smartCrop}
+            onSmartCropChange={setSmartCrop}
             subtitleFontSize={subtitleFontSize}
             subtitleFont={subtitleFont}
             systemFonts={systemFonts}

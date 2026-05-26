@@ -21,9 +21,10 @@ EXTRA_CONFIG=$(cat <<'JSONEOF'
     "resources": [
       "../scripts/transcribe.py",
       "../scripts/burn_subtitles.py",
+      "../scripts/smart_crop.py",
+      "../scripts/download_llama_server.py",
       "vendor/python/**/*",
-      "vendor/bin/ffmpeg",
-      "vendor/bin/ffprobe",
+      "vendor/bin/**",
       "vendor/models/**/*"
     ]
   }
