@@ -1496,6 +1496,135 @@ pub async fn install_dependency(install_cmd: String) -> Result<(), String> {
     Ok(())
 }
 
+// ─── License management ──────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LicenseInfo {
+    pub key: String,
+    pub instance_id: String,
+    pub product_name: String,
+    pub customer_name: String,
+    pub customer_email: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LsActivateResponse {
+    activated: bool,
+    error: Option<String>,
+    instance: Option<LsInstance>,
+    meta: Option<LsMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LsInstance {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LsMeta {
+    product_name: String,
+    #[serde(default)]
+    customer_name: String,
+    #[serde(default)]
+    customer_email: String,
+}
+
+fn license_file(app: &tauri::AppHandle) -> PathBuf {
+    app.path().app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("license.json")
+}
+
+#[tauri::command]
+pub async fn check_license(app: tauri::AppHandle) -> Option<LicenseInfo> {
+    if cfg!(debug_assertions) {
+        return Some(LicenseInfo {
+            key: "DEV-MODE".to_string(),
+            instance_id: "dev".to_string(),
+            product_name: "AutoClipper".to_string(),
+            customer_name: "Developer".to_string(),
+            customer_email: String::new(),
+        });
+    }
+    let path = license_file(&app);
+    let content = tokio::fs::read_to_string(&path).await.ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+#[tauri::command]
+pub async fn activate_license(app: tauri::AppHandle, key: String) -> Result<LicenseInfo, String> {
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err("License key tidak boleh kosong".to_string());
+    }
+
+    let instance_name = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "AutoClipper".to_string());
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://api.lemonsqueezy.com/v1/licenses/activate")
+        .form(&[("license_key", key.as_str()), ("instance_name", instance_name.as_str())])
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| format!("Gagal menghubungi server lisensi: {e}"))?;
+
+    let body: LsActivateResponse = resp.json().await
+        .map_err(|e| format!("Respons server tidak valid: {e}"))?;
+
+    if !body.activated {
+        return Err(body.error.unwrap_or_else(|| "Lisensi tidak valid atau sudah habis digunakan".to_string()));
+    }
+
+    let instance = body.instance.ok_or("Data instance tidak ditemukan")?;
+    let meta = body.meta.unwrap_or(LsMeta {
+        product_name: "AutoClipper".to_string(),
+        customer_name: String::new(),
+        customer_email: String::new(),
+    });
+
+    let info = LicenseInfo {
+        key,
+        instance_id: instance.id,
+        product_name: meta.product_name,
+        customer_name: meta.customer_name,
+        customer_email: meta.customer_email,
+    };
+
+    let path = license_file(&app);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await
+            .map_err(|e| format!("Gagal membuat direktori: {e}"))?;
+    }
+    tokio::fs::write(&path, serde_json::to_string(&info).unwrap()).await
+        .map_err(|e| format!("Gagal menyimpan lisensi: {e}"))?;
+
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn deactivate_license(app: tauri::AppHandle) -> Result<(), String> {
+    let path = license_file(&app);
+    if !path.exists() {
+        return Ok(());
+    }
+    if let Ok(content) = tokio::fs::read_to_string(&path).await {
+        if let Ok(info) = serde_json::from_str::<LicenseInfo>(&content) {
+            let client = reqwest::Client::new();
+            let _ = client
+                .post("https://api.lemonsqueezy.com/v1/licenses/deactivate")
+                .form(&[("license_key", info.key.as_str()), ("instance_id", info.instance_id.as_str())])
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await;
+        }
+    }
+    tokio::fs::remove_file(&path).await
+        .map_err(|e| format!("Gagal menghapus lisensi: {e}"))
+}
+
 #[tauri::command]
 pub async fn get_video_duration(video_path: String) -> Result<f64, String> {
     let ffprobe = find_ffprobe(None);

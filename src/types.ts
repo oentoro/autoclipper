@@ -87,6 +87,14 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   allCaps: false,
 };
 
+export interface LicenseInfo {
+  key: string;
+  instance_id: string;
+  product_name: string;
+  customer_name: string;
+  customer_email: string;
+}
+
 export interface DepCheck {
   name: string;
   ok: boolean;

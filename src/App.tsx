@@ -7,7 +7,8 @@ import TranscriptView from "./components/TranscriptView";
 import ClipResults from "./components/ClipResults";
 import DepsCheck from "./components/DepsCheck";
 import ModelManager from "./components/ModelManager";
-import type { SrtSegment, TranscribeResult, TranslateResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle } from "./types";
+import LicenseGate from "./components/LicenseGate";
+import type { SrtSegment, TranscribeResult, TranslateResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle, LicenseInfo } from "./types";
 import { DEFAULT_SUBTITLE_STYLE } from "./types";
 
 const WHISPER_LANGS = [
@@ -38,6 +39,17 @@ const TRANSLATE_LANGS = [
 ];
 
 export default function App() {
+  const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(null);
+
+  if (!licenseInfo) {
+    return <LicenseGate onLicensed={setLicenseInfo} />;
+  }
+
+  return <AppContent licenseInfo={licenseInfo} />;
+}
+
+function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
+  const [showLicenseInfo, setShowLicenseInfo] = useState(false);
   const [depsStatus, setDepsStatus] = useState<DepsStatus | null>(null);
   const [depsChecking, setDepsChecking] = useState(true);
   const [showDeps, setShowDeps] = useState(false);
@@ -349,6 +361,15 @@ export default function App() {
           <button className="btn btn-ghost btn-sm" onClick={() => setShowDeps(true)} title="Cek dependensi">
             ⚙ Dependensi
           </button>
+          {licenseInfo && licenseInfo.key !== "DEV-MODE" && (
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowLicenseInfo(true)}
+              title="Info lisensi"
+            >
+              🔑 Lisensi
+            </button>
+          )}
           {(step !== "upload") && (
             <button className="btn btn-ghost" onClick={handleReset}>
               ↩ Mulai Ulang
@@ -525,6 +546,54 @@ export default function App() {
           onRefresh={refreshModels}
         />
       )}
+
+      {showLicenseInfo && licenseInfo && (
+        <div className="modal-overlay" onClick={() => setShowLicenseInfo(false)}>
+          <div className="modal-box license-info-modal" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-title">Informasi Lisensi</h3>
+            <div className="license-info-rows">
+              <div className="license-info-row">
+                <span className="license-info-label">Produk</span>
+                <span className="license-info-value">{licenseInfo.product_name}</span>
+              </div>
+              {licenseInfo.customer_name && (
+                <div className="license-info-row">
+                  <span className="license-info-label">Nama</span>
+                  <span className="license-info-value">{licenseInfo.customer_name}</span>
+                </div>
+              )}
+              {licenseInfo.customer_email && (
+                <div className="license-info-row">
+                  <span className="license-info-label">Email</span>
+                  <span className="license-info-value">{licenseInfo.customer_email}</span>
+                </div>
+              )}
+              <div className="license-info-row">
+                <span className="license-info-label">Key</span>
+                <span className="license-info-value license-key-display">{licenseInfo.key}</span>
+              </div>
+            </div>
+            <div className="license-info-actions">
+              <button className="btn btn-ghost" onClick={() => setShowLicenseInfo(false)}>Tutup</button>
+              <button
+                className="btn btn-danger"
+                onClick={async () => {
+                  if (!confirm("Nonaktifkan lisensi di perangkat ini? Anda bisa mengaktifkannya kembali di perangkat lain.")) return;
+                  try {
+                    await invoke("deactivate_license");
+                    window.location.reload();
+                  } catch (e) {
+                    alert(String(e));
+                  }
+                }}
+              >
+                Nonaktifkan Lisensi
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

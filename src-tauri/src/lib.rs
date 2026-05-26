@@ -28,6 +28,9 @@ pub fn run() {
             get_video_duration,
             reveal_in_file_manager,
             install_dependency,
+            check_license,
+            activate_license,
+            deactivate_license,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

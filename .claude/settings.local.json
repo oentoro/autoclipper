@@ -6,7 +6,11 @@
       "PowerShell(npm run *)",
       "PowerShell(Get-NetTCPConnection *)",
       "PowerShell(ffmpeg *)",
-      "PowerShell(Get-Process *)"
+      "PowerShell(Get-Process *)",
+      "Bash(rtk wc *)",
+      "Bash(rtk read *)",
+      "Bash(rtk tsc *)",
+      "Bash(rtk cargo *)"
     ]
   }
 }
