@@ -110,6 +110,11 @@ export default function TranscriptView({
   const [previewReady, setPreviewReady] = useState(false);
   const fontStyleRef = useRef<HTMLStyleElement | null>(null);
 
+  // Clear search when sections first appear so the section-grouped view is shown
+  useEffect(() => {
+    if (sections.length > 0) setSearchText("");
+  }, [sections.length]);
+
   // Dynamically load the selected font file and inject a @font-face rule
   useEffect(() => {
     if (!fontStyleRef.current) {
@@ -235,6 +240,9 @@ export default function TranscriptView({
             >
               🗂 Klasifikasi Bagian
             </button>
+            {hasSections && (
+              <p className="classify-sections-count">{sections.length} bagian ditemukan</p>
+            )}
             <div className="sidebar-actions-row">
               <button className="btn btn-secondary" onClick={onSelectAll}>✓ Pilih Semua</button>
               <button className="btn btn-ghost" onClick={onClearAll}>✕ Hapus</button>
@@ -527,9 +535,12 @@ export default function TranscriptView({
               const segs = segmentsOf(section);
               return (
                 <div key={sIdx} className={`section-group ${status === "all" ? "section-selected" : status === "partial" ? "section-partial" : ""}`}>
-                  <button
+                  <div
                     className="section-header"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => onToggleSection(sIdx)}
+                    onKeyDown={e => (e.key === "Enter" || e.key === " ") && onToggleSection(sIdx)}
                   >
                     <div className="section-check">
                       {status === "all" ? "✓" : status === "partial" ? "◑" : "○"}
@@ -541,9 +552,9 @@ export default function TranscriptView({
                         <span className="section-time">{sectionTimeRange(section)}</span>
                         <span className="section-count">{segs.length} segmen</span>
                       </div>
-                      <p className="section-summary">{section.summary}</p>
+                      <div className="section-summary">{section.summary}</div>
                     </div>
-                  </button>
+                  </div>
 
                   <div className="section-segments">
                     {segs.map(seg => (

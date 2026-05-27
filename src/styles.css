@@ -573,6 +573,7 @@ body {
 
 .segments-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -616,7 +617,7 @@ body {
 .segment-index  { font-size: 12px; font-weight: 700; color: var(--text2); flex-shrink: 0; }
 .segment-time   { font-size: 11px; color: var(--text2); font-family: monospace; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 160px; }
 .segment-duration { font-size: 11px; color: var(--accent2); margin-left: auto; flex-shrink: 0; white-space: nowrap; }
-.segment-text   { font-size: 13px; line-height: 1.5; padding-left: 30px; overflow-wrap: break-word; word-break: break-word; }
+.segment-text   { font-size: 13px; line-height: 1.5; padding-left: 30px; overflow-wrap: break-word; word-break: break-word; color: var(--text); }
 
 .empty-state { text-align: center; padding: 40px; color: var(--text2); }
 
@@ -822,13 +823,13 @@ body {
 .section-header {
   width: 100%;
   background: var(--bg3);
-  border: none;
+  color: var(--text);
   display: flex;
   align-items: flex-start;
   gap: 12px;
   padding: 12px 14px;
   cursor: pointer;
-  text-align: left;
+  user-select: none;
   transition: background 0.15s;
 }
 .section-header:hover { background: color-mix(in srgb, var(--bg3) 80%, var(--accent) 20%); }
@@ -921,6 +922,13 @@ body {
   border-radius: 6px;
 }
 .segment-card.compact .segment-text { font-size: 12px; }
+
+.classify-sections-count {
+  font-size: 12px;
+  color: var(--accent2);
+  text-align: center;
+  margin-top: 4px;
+}
 
 /* Classify hint */
 .classify-hint {
