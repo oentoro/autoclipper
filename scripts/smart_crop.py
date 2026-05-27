@@ -269,10 +269,19 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
     cascade_profile = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
 
     every = max(1, int(fps / 4))   # sample ~4 fps
+    sample_fps = fps / every
+    # Minimum sampled frames before allowing a face switch (~2.5 s at ~4 fps sampling)
+    min_lock_samples = max(8, int(round(sample_fps * 2.5)))
+    # cx must differ by >20% of frame width to be treated as a different face
+    switch_dist = src_w * 0.20
+
     default_cx = src_w // 2
-    last_cx = default_cx
-    prev_gray = None
+    last_cx    = default_cx
+    prev_gray  = None
     raw_cx: list[int] = []
+
+    locked_cx: int | None = None   # face center we are currently tracking
+    lock_age:  int        = 0      # sampled frames spent on the current lock
 
     cap = cv2.VideoCapture(video_path)
     idx = 0
@@ -291,7 +300,28 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
 
             cx = pick_speaker_cx(faces, gray, prev_gray)
             if cx is not None:
-                last_cx = cx
+                if locked_cx is None:
+                    # First detection — establish lock immediately
+                    locked_cx = cx
+                    lock_age  = 0
+                elif abs(cx - locked_cx) <= switch_dist:
+                    # Same face region (speaker may have shifted slightly)
+                    locked_cx = cx
+                    lock_age += 1
+                else:
+                    # Different face region detected
+                    if lock_age >= min_lock_samples:
+                        # Lock held long enough — switch to new face
+                        locked_cx = cx
+                        lock_age  = 0
+                    else:
+                        # Too soon — stay on current face, ignore the switch
+                        lock_age += 1
+                last_cx = locked_cx
+            else:
+                # No face this sample — age the lock but hold position
+                lock_age += 1
+
             prev_gray = gray
         else:
             if not cap.grab():

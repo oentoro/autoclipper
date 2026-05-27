@@ -703,51 +703,52 @@ fn build_crop_filter(ratio: &str, src_w: u32, src_h: u32) -> Option<String> {
 // ─── Clip grouping ────────────────────────────────────────────────────────────
 //
 // Consecutive segments (gap ≤ 0.5 s) are merged into a single extraction range.
-// This avoids re-encoding at every segment boundary, which was the root cause of
-// stutters when selecting sequential clips. Each group is extracted as ONE clip
-// with whole-second boundaries (floor start, ceil end) for stable keyframe alignment.
+// Timestamps are taken directly from the SRT data (exact float seconds) — no
+// floor/ceil rounding — so FFmpeg cuts precisely at the transcribed boundaries
+// and no content can repeat across group boundaries.
 
 struct ClipGroup<'a> {
     segs: Vec<&'a SrtSegment>,
-    start_sec: i64, // floor(first.start)
-    end_sec: i64,   // ceil(last.end), always > start_sec
+    start_sec: f64, // exact start of first segment
+    end_sec: f64,   // exact end of last segment
 }
 
 impl ClipGroup<'_> {
-    fn duration(&self) -> f64 { (self.end_sec - self.start_sec) as f64 }
+    fn duration(&self) -> f64 { self.end_sec - self.start_sec }
 }
 
 fn group_segments<'a>(selected: &[&'a SrtSegment]) -> Vec<ClipGroup<'a>> {
-    const GAP: f64 = 0.5;
     if selected.is_empty() { return Vec::new(); }
 
     let mut groups: Vec<ClipGroup<'a>> = Vec::new();
     let mut cur: Vec<&'a SrtSegment> = vec![selected[0]];
 
+    // Group by consecutive SRT index, not by time gap.
+    // Segments 10–53 (all selected from one "bagian") → ONE clip from
+    // first.start to last.end regardless of silence gaps between segments.
+    // Non-adjacent indices (e.g. user picks seg 5 and seg 50) → separate clips.
     for seg in &selected[1..] {
-        if seg.start - cur.last().unwrap().end <= GAP {
+        if seg.index == cur.last().unwrap().index + 1 {
             cur.push(seg);
         } else {
-            let s = cur.first().unwrap().start.floor() as i64;
-            let e = (cur.last().unwrap().end.ceil() as i64).max(s + 1);
+            let s = cur.first().unwrap().start;
+            let e = cur.last().unwrap().end;
             groups.push(ClipGroup { segs: cur, start_sec: s, end_sec: e });
             cur = vec![seg];
         }
     }
-    let s = cur.first().unwrap().start.floor() as i64;
-    let e = (cur.last().unwrap().end.ceil() as i64).max(s + 1);
+    let s = cur.first().unwrap().start;
+    let e = cur.last().unwrap().end;
     groups.push(ClipGroup { segs: cur, start_sec: s, end_sec: e });
     groups
 }
 
 // Subtitle entries retimed to the merged clip timeline.
-// Each segment's position inside its group is preserved exactly; groups are
-// placed back-to-back in the merged clip.
 fn build_retimed_entries(groups: &[ClipGroup]) -> Vec<serde_json::Value> {
     let mut entries = Vec::new();
     let mut cursor = 0.0_f64;
     for group in groups {
-        let g_start = group.start_sec as f64;
+        let g_start = group.start_sec;
         let g_dur   = group.duration();
         for seg in &group.segs {
             let sub_start = (cursor + (seg.start - g_start)).max(0.0);
@@ -759,42 +760,40 @@ fn build_retimed_entries(groups: &[ClipGroup]) -> Vec<serde_json::Value> {
     entries
 }
 
-// Single group, no concat: stream copy (no crop) or transcode (with crop).
-// Stream copy is safe here because there is no concat demuxer step that could
-// mishandle timestamps.
+// Single group — always transcode so that the seek is frame-accurate.
+// Stream copy with fast input seek snaps to the nearest keyframe which can
+// include a few frames of content before the intended start, causing repeats
+// when the clip is played back after concatenation.
 fn encode_one_group(
     ffmpeg: &str, video_path: &str, group: &ClipGroup,
     crop_filter: Option<&str>, dest: &str,
 ) -> Result<(), String> {
-    let ss = group.start_sec.to_string();
-    let to = group.end_sec.to_string();
+    let ss  = format!("{:.6}", group.start_sec);
+    let dur = format!("{:.6}", group.duration());
 
-    let status = if let Some(crop) = crop_filter {
-        Command::new(ffmpeg)
-            .args([
-                "-y",
-                "-ss", &ss, "-to", &to,   // fast input seek
-                "-i", video_path,
-                "-vf", crop,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-threads", "0",
-                "-c:a", "aac", "-b:a", "128k",
-                dest,
-            ])
-            .status()
-            .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?
-    } else {
-        Command::new(ffmpeg)
-            .args([
-                "-y",
-                "-ss", &ss, "-to", &to,
-                "-i", video_path,
-                "-c", "copy",
-                "-reset_timestamps", "1",
-                dest,
-            ])
-            .status()
-            .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?
-    };
+    let mut args = vec![
+        "-y".to_string(),
+        "-ss".to_string(), ss,
+        "-i".to_string(),  video_path.to_string(),
+        "-t".to_string(),  dur,   // duration instead of -to: avoids rounding drift
+    ];
+    if let Some(crop) = crop_filter {
+        args.extend(["-vf".to_string(), crop.to_string()]);
+    }
+    args.extend([
+        "-c:v".to_string(), "libx264".to_string(),
+        "-preset".to_string(), "fast".to_string(),
+        "-crf".to_string(), "23".to_string(),
+        "-threads".to_string(), "0".to_string(),
+        "-c:a".to_string(), "aac".to_string(),
+        "-b:a".to_string(), "128k".to_string(),
+        dest.to_string(),
+    ]);
+
+    let status = Command::new(ffmpeg)
+        .args(&args)
+        .status()
+        .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
 
     if status.success() { Ok(()) } else { Err("FFmpeg gagal mengekstrak klip.".to_string()) }
 }
@@ -813,11 +812,13 @@ fn concat_groups(
     let n = groups.len();
     let mut args: Vec<String> = vec!["-y".to_string()];
 
-    // One input per group, each with fast input seek
+    // One input per group: fast seek to start, then limit by duration.
+    // Using -t (duration) instead of -to avoids accumulated rounding drift
+    // across groups when filter_complex stitches them together.
     for group in groups {
         args.extend([
-            "-ss".to_string(), group.start_sec.to_string(),
-            "-to".to_string(), group.end_sec.to_string(),
+            "-ss".to_string(), format!("{:.6}", group.start_sec),
+            "-t".to_string(),  format!("{:.6}", group.duration()),
             "-i".to_string(),  video_path.to_string(),
         ]);
     }
@@ -1386,7 +1387,7 @@ pub async fn clip_video(
     let mut selected: Vec<&SrtSegment> = segments.iter()
         .filter(|s| selected_indices.contains(&s.index)).collect();
     if selected.is_empty() { return Err("Tidak ada segmen yang dipilih".to_string()); }
-    selected.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+    selected.sort_by_key(|s| s.index);
 
     let total_segments = selected.len();
     let total_duration: f64 = selected.iter().map(|s| s.end - s.start).sum();

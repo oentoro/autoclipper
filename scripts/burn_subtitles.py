@@ -83,18 +83,49 @@ def get_text_at(t, entries):
             return entry["text"]
     return None
 
+def _measure_text(draw, text, font) -> int:
+    """Return rendered pixel width of text."""
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        return max(0, bbox[2] - bbox[0])
+    except AttributeError:
+        w, _ = draw.textsize(text, font=font)  # type: ignore[attr-defined]
+        return w
+
+
+def _split_word_by_chars(draw, word, font, max_width) -> list[str]:
+    """Split a single word that exceeds max_width, breaking by character."""
+    parts, current = [], ""
+    for ch in word:
+        test = current + ch
+        if _measure_text(draw, test, font) <= max_width:
+            current = test
+        else:
+            if current:
+                parts.append(current)
+            current = ch
+    if current:
+        parts.append(current)
+    return parts or [word]
+
+
 def wrap_text(text, font, max_width, draw):
     words = text.split()
     lines, current = [], []
     for word in words:
         test = " ".join(current + [word])
-        w = draw.textlength(test, font=font)
-        if w <= max_width:
+        if _measure_text(draw, test, font) <= max_width:
             current.append(word)
         else:
             if current:
                 lines.append(" ".join(current))
-            current = [word]
+            # Word itself might be wider than max_width — split by character
+            if _measure_text(draw, word, font) > max_width:
+                parts = _split_word_by_chars(draw, word, font, max_width)
+                lines.extend(parts[:-1])
+                current = [parts[-1]] if parts else []
+            else:
+                current = [word]
     if current:
         lines.append(" ".join(current))
     return lines or [""]
@@ -110,9 +141,20 @@ def draw_subtitle(img, text, font, line_h, style):
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    # 82% width → ~9% margin each side, looks professional on 9:16
-    max_w = int(w * 0.82)
-    lines = wrap_text(text, font, max_w, draw)
+    outline_w   = int(style.get("outlineWidth", 2))
+    all_caps    = style.get("allCaps", False)
+
+    # Apply allCaps BEFORE wrapping so measurement reflects actual rendered width.
+    # Uppercase letters are ~15–25% wider; wrapping on lowercase then uppercasing
+    # causes overflow on the right edge.
+    effective_text = text.upper() if all_caps else text
+
+    # margin: 10% each side (min 24px). Subtract stroke bleed (outline_w) from
+    # each side so a line at max_w + stroke still stays within the margin zone.
+    margin = max(int(w * 0.10), 24)
+    max_w  = w - 2 * margin - 2 * outline_w
+
+    lines = wrap_text(effective_text, font, max_w, draw)
     total_h = len(lines) * line_h
 
     pos = style.get("position", "bottom")
@@ -125,24 +167,23 @@ def draw_subtitle(img, text, font, line_h, style):
 
     text_rgb    = hex_to_rgb(style.get("textColor",    "#ffffff"))
     outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))
-    outline_w   = int(style.get("outlineWidth", 2))
     box_enabled = style.get("boxEnabled", False)
     box_rgb     = hex_to_rgb(style.get("boxColor", "#000000"))
     box_alpha   = int(style.get("boxOpacity", 70) / 100 * 255)
-    all_caps    = style.get("allCaps", False)
 
     for line in lines:
-        if all_caps:
-            line = line.upper()
-        tw = int(draw.textlength(line, font=font))
+        tw = _measure_text(draw, line, font)
+
+        # Center the line, then clamp so neither text nor its stroke crosses margin.
+        # stroke_width bleeds outline_w pixels beyond tw on each side, so offset by that.
         x = (w - tw) // 2
+        x = max(margin + outline_w, min(x, w - margin - outline_w - tw))
 
         if box_enabled and box_alpha > 0:
-            pad_x, pad_y = 14, 5
-            draw.rectangle(
-                [x - pad_x, y - pad_y, x + tw + pad_x, y + line_h - 4],
-                fill=(*box_rgb, box_alpha),
-            )
+            pad_x, pad_y = 12, 5
+            bx1 = max(0, x - pad_x)
+            bx2 = min(w, x + tw + pad_x)
+            draw.rectangle([bx1, y - pad_y, bx2, y + line_h - 4], fill=(*box_rgb, box_alpha))
 
         draw.text(
             (x, y), line, font=font,
