@@ -10,6 +10,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(commands::DownloadState::default())
         .manage(commands::LlamaServerState::default())
+        .manage(commands::WhisperDownloadState::default())
         .invoke_handler(tauri::generate_handler![
             check_dependencies,
             get_system_fonts,
@@ -31,6 +32,10 @@ pub fn run() {
             check_license,
             activate_license,
             deactivate_license,
+            list_whisper_models,
+            download_whisper_model,
+            cancel_whisper_download,
+            delete_whisper_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

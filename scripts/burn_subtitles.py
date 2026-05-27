@@ -110,17 +110,18 @@ def draw_subtitle(img, text, font, line_h, style):
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    max_w = int(w * 0.88)
+    # 82% width → ~9% margin each side, looks professional on 9:16
+    max_w = int(w * 0.82)
     lines = wrap_text(text, font, max_w, draw)
     total_h = len(lines) * line_h
 
     pos = style.get("position", "bottom")
     if pos == "top":
-        y = int(h * 0.06)
+        y = int(h * 0.08)
     elif pos == "center":
         y = (h - total_h) // 2
     else:
-        y = h - int(h * 0.10) - total_h
+        y = h - int(h * 0.12) - total_h
 
     text_rgb    = hex_to_rgb(style.get("textColor",    "#ffffff"))
     outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))

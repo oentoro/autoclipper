@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { LlmModel, DownloadProgress } from "../types";
+import { listen } from "@tauri-apps/api/event";
+import type { LlmModel, DownloadProgress, WhisperModelInfo, WhisperDownloadProgress } from "../types";
 
 interface RecommendedModel {
   id: string;
@@ -62,9 +63,144 @@ interface Props {
   onRefresh: () => void;
 }
 
+function fmtSize(mb: number) {
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+}
+
 function fmtGb(bytes: number) {
   return (bytes / 1073741824).toFixed(2);
 }
+
+// ── Whisper tab ────────────────────────────────────────────────────────────────
+
+function WhisperTab() {
+  const [models, setModels] = useState<WhisperModelInfo[]>([]);
+  const [dlProgress, setDlProgress] = useState<Record<string, WhisperDownloadProgress>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  async function refresh() {
+    try {
+      const list = await invoke<WhisperModelInfo[]>("list_whisper_models");
+      setModels(list);
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => {
+    refresh();
+    const unlistenPromise = listen<WhisperDownloadProgress>("whisper-download-progress", event => {
+      const p = event.payload;
+      setDlProgress(prev => ({ ...prev, [p.model_key]: p }));
+      if (p.done && !p.error) {
+        setTimeout(refresh, 300);
+        setDlProgress(prev => {
+          const n = { ...prev };
+          delete n[p.model_key];
+          return n;
+        });
+      }
+      if (p.error) {
+        setErrors(prev => ({ ...prev, [p.model_key]: p.error! }));
+        setDlProgress(prev => {
+          const n = { ...prev };
+          delete n[p.model_key];
+          return n;
+        });
+      }
+    });
+    return () => { unlistenPromise.then(fn => fn()); };
+  }, []);
+
+  async function handleDownload(m: WhisperModelInfo) {
+    const key = `${m.id}-${m.backend}`;
+    setErrors(prev => { const n = { ...prev }; delete n[key]; return n; });
+    invoke("download_whisper_model", { modelId: m.id, backend: m.backend })
+      .catch(e => {
+        const msg = String(e);
+        if (!msg.includes("dibatalkan")) {
+          setErrors(prev => ({ ...prev, [key]: msg }));
+        }
+        setDlProgress(prev => { const n = { ...prev }; delete n[key]; return n; });
+      });
+  }
+
+  async function handleCancel(m: WhisperModelInfo) {
+    const key = `${m.id}-${m.backend}`;
+    await invoke("cancel_whisper_download", { modelKey: key });
+    setDlProgress(prev => { const n = { ...prev }; delete n[key]; return n; });
+  }
+
+  async function handleDelete(m: WhisperModelInfo) {
+    if (!m.cache_path) return;
+    try {
+      await invoke("delete_whisper_model", { cachePath: m.cache_path });
+      await refresh();
+    } catch { /* ignore */ }
+  }
+
+  const backendLabel = models[0]?.backend === "mlx" ? "MLX (Apple Silicon GPU)" : "CPU (faster-whisper)";
+
+  return (
+    <div className="mm-whisper-tab">
+      <p className="mm-whisper-desc">
+        Model Whisper digunakan untuk transkripsi suara. Unduh model sebelum transkripsi
+        agar prosesnya tidak terhambat oleh download. Backend aktif: <strong>{backendLabel}</strong>.
+      </p>
+      <div className="mm-model-list">
+        {models.map(m => {
+          const key = `${m.id}-${m.backend}`;
+          const dl = dlProgress[key];
+          const isActive = !!dl;
+          const err = errors[key];
+
+          return (
+            <div key={key} className={`mm-model-card ${m.cached ? "downloaded" : ""}`}>
+              <div className="mm-model-header">
+                <div className="mm-model-name-row">
+                  <span className="mm-model-name">{m.name}</span>
+                  <span className="mm-tag whisper-preset">Preset: {m.preset_label}</span>
+                  {m.cached && <span className="mm-tag active">✓ Tersedia</span>}
+                </div>
+                <span className="mm-model-size">~{fmtSize(m.size_mb)}</span>
+              </div>
+              <p className="mm-model-desc">{m.description}</p>
+
+              {err && <p className="mm-error">{err}</p>}
+
+              {isActive && dl ? (
+                <div className="mm-progress">
+                  <div className="mm-progress-bar">
+                    <div className="mm-progress-fill" style={{ width: `${dl.percent}%` }} />
+                  </div>
+                  <div className="mm-progress-info">
+                    <span className="mm-progress-pct">{dl.percent}%</span>
+                    <button className="mm-btn-cancel" onClick={() => handleCancel(m)}>
+                      ✕ Batalkan
+                    </button>
+                  </div>
+                </div>
+              ) : m.cached ? (
+                <div className="mm-actions">
+                  <button className="mm-btn mm-btn-delete" onClick={() => handleDelete(m)}>
+                    🗑 Hapus
+                  </button>
+                </div>
+              ) : (
+                <button className="mm-btn mm-btn-download" onClick={() => handleDownload(m)}>
+                  ⬇ Unduh ~{fmtSize(m.size_mb)}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mm-footer-note">
+        Model tersimpan di cache HuggingFace lokal. Tidak diperlukan koneksi internet setelah diunduh.
+      </p>
+    </div>
+  );
+}
+
+// ── Main component ─────────────────────────────────────────────────────────────
 
 export default function ModelManager({
   llmModels,
@@ -74,19 +210,17 @@ export default function ModelManager({
   onClose,
   onRefresh,
 }: Props) {
+  const [activeTab, setActiveTab] = useState<"llm" | "whisper">("whisper");
   const [hfToken, setHfToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  // filename → bytes already saved in .part file
   const [partials, setPartials] = useState<Record<string, number>>({});
 
   async function refreshPartials() {
     try {
       const p = await invoke<Record<string, number>>("get_partial_downloads");
       setPartials(p);
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
   useEffect(() => { refreshPartials(); }, []);
@@ -116,7 +250,6 @@ export default function ModelManager({
 
   async function handleCancel(filename: string) {
     await invoke("cancel_llm_download", { filename });
-    // Give the backend a moment to flush, then refresh partial info
     setTimeout(refreshPartials, 400);
   }
 
@@ -124,18 +257,14 @@ export default function ModelManager({
     try {
       await invoke("discard_partial_download", { filename });
       setPartials(prev => { const n = { ...prev }; delete n[filename]; return n; });
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
   async function handleDelete(model: LlmModel) {
     try {
       await invoke("delete_llm_model", { path: model.path });
       onRefresh();
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
 
   const extraLocalModels = llmModels.filter(
@@ -150,170 +279,188 @@ export default function ModelManager({
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
 
-        {/* HuggingFace token section — shown only if any recommended model needs it */}
-        {RECOMMENDED.some(r => r.requires_token) && (
-          <div className="mm-token-section">
-            <button className="mm-token-toggle" onClick={() => setShowToken(!showToken)}>
-              🔑 Token HuggingFace {showToken ? "▲" : "▼"}
-            </button>
-            {showToken && (
-              <div className="mm-token-body">
-                <p className="mm-token-hint">
-                  Diperlukan untuk beberapa model. Cara mendapatkan token gratis:{" "}
-                  <span className="mm-token-step">1.</span> Daftar di huggingface.co →{" "}
-                  <span className="mm-token-step">2.</span> Settings → Access Tokens → New token →{" "}
-                  <span className="mm-token-step">3.</span> Setujui lisensi model di halaman modelnya.
-                </p>
-                <input
-                  type="password"
-                  className="mm-token-input"
-                  placeholder="hf_xxxxxxxxxxxxxxxxxxxxxx"
-                  value={hfToken}
-                  onChange={e => setHfToken(e.target.value)}
-                  autoComplete="off"
-                />
+        {/* Tabs */}
+        <div className="mm-tabs">
+          <button
+            className={`mm-tab ${activeTab === "whisper" ? "active" : ""}`}
+            onClick={() => setActiveTab("whisper")}
+          >
+            🎙 Whisper (Transkripsi)
+          </button>
+          <button
+            className={`mm-tab ${activeTab === "llm" ? "active" : ""}`}
+            onClick={() => setActiveTab("llm")}
+          >
+            🤖 LLM (Klasifikasi)
+          </button>
+        </div>
+
+        {activeTab === "whisper" ? (
+          <div className="mm-scroll">
+            <WhisperTab />
+          </div>
+        ) : (
+          <div className="mm-scroll">
+            {/* HuggingFace token section */}
+            {RECOMMENDED.some(r => r.requires_token) && (
+              <div className="mm-token-section">
+                <button className="mm-token-toggle" onClick={() => setShowToken(!showToken)}>
+                  🔑 Token HuggingFace {showToken ? "▲" : "▼"}
+                </button>
+                {showToken && (
+                  <div className="mm-token-body">
+                    <p className="mm-token-hint">
+                      Diperlukan untuk beberapa model. Cara mendapatkan token gratis:{" "}
+                      <span className="mm-token-step">1.</span> Daftar di huggingface.co →{" "}
+                      <span className="mm-token-step">2.</span> Settings → Access Tokens → New token →{" "}
+                      <span className="mm-token-step">3.</span> Setujui lisensi model di halaman modelnya.
+                    </p>
+                    <input
+                      type="password"
+                      className="mm-token-input"
+                      placeholder="hf_xxxxxxxxxxxxxxxxxxxxxx"
+                      value={hfToken}
+                      onChange={e => setHfToken(e.target.value)}
+                      autoComplete="off"
+                    />
+                  </div>
+                )}
               </div>
             )}
-          </div>
-        )}
 
-        <div className="mm-scroll">
-          <div className="mm-section">
-            <h3 className="mm-section-title">Model yang Tersedia</h3>
-            <div className="mm-model-list">
-              {RECOMMENDED.map(rec => {
-                const dl         = downloads[rec.filename];
-                const isActive   = dl && !dl.done;
-                const err        = errors[rec.filename];
-                const local      = getLocalModel(rec.filename);
-                const done       = isDownloaded(rec.filename);
-                const isSelected = selectedLlm?.path === local?.path;
-                const partial    = !done && !isActive ? (partials[rec.filename] ?? 0) : 0;
-                const hasPartial = partial > 0;
+            <div className="mm-section">
+              <h3 className="mm-section-title">Model yang Tersedia</h3>
+              <div className="mm-model-list">
+                {RECOMMENDED.map(rec => {
+                  const dl         = downloads[rec.filename];
+                  const isActive   = dl && !dl.done;
+                  const err        = errors[rec.filename];
+                  const local      = getLocalModel(rec.filename);
+                  const done       = isDownloaded(rec.filename);
+                  const isSelected = selectedLlm?.path === local?.path;
+                  const partial    = !done && !isActive ? (partials[rec.filename] ?? 0) : 0;
+                  const hasPartial = partial > 0;
 
-                return (
-                  <div
-                    key={rec.id}
-                    className={`mm-model-card ${done ? "downloaded" : ""} ${isSelected ? "active-model" : ""}`}
-                  >
-                    <div className="mm-model-header">
-                      <div className="mm-model-name-row">
-                        <span className="mm-model-name">{rec.name}</span>
-                        {rec.tag && <span className="mm-tag recommended">{rec.tag}</span>}
-                        {isSelected && <span className="mm-tag active">✓ Aktif</span>}
-                        {rec.requires_token && <span className="mm-tag token">🔑 Token</span>}
-                        {hasPartial && <span className="mm-tag partial">⏸ Tersimpan</span>}
-                      </div>
-                      <span className="mm-model-size">{rec.size_gb.toFixed(1)} GB</span>
-                    </div>
-                    <p className="mm-model-desc">{rec.description}</p>
-
-                    {err && <p className="mm-error">{err}</p>}
-
-                    {isActive && dl ? (
-                      <div className="mm-progress">
-                        <div className="mm-progress-bar">
-                          <div className="mm-progress-fill" style={{ width: `${dl.percent}%` }} />
+                  return (
+                    <div
+                      key={rec.id}
+                      className={`mm-model-card ${done ? "downloaded" : ""} ${isSelected ? "active-model" : ""}`}
+                    >
+                      <div className="mm-model-header">
+                        <div className="mm-model-name-row">
+                          <span className="mm-model-name">{rec.name}</span>
+                          {rec.tag && <span className="mm-tag recommended">{rec.tag}</span>}
+                          {isSelected && <span className="mm-tag active">✓ Aktif</span>}
+                          {rec.requires_token && <span className="mm-tag token">🔑 Token</span>}
+                          {hasPartial && <span className="mm-tag partial">⏸ Tersimpan</span>}
                         </div>
-                        <div className="mm-progress-info">
-                          <span className="mm-progress-pct">{dl.percent.toFixed(0)}%</span>
-                          <span className="mm-progress-bytes">
-                            {fmtGb(dl.downloaded)} / {fmtGb(dl.total)} GB
-                          </span>
-                          <button className="mm-btn-cancel" onClick={() => handleCancel(rec.filename)}>
-                            ✕ Batalkan
+                        <span className="mm-model-size">{rec.size_gb.toFixed(1)} GB</span>
+                      </div>
+                      <p className="mm-model-desc">{rec.description}</p>
+
+                      {err && <p className="mm-error">{err}</p>}
+
+                      {isActive && dl ? (
+                        <div className="mm-progress">
+                          <div className="mm-progress-bar">
+                            <div className="mm-progress-fill" style={{ width: `${dl.percent}%` }} />
+                          </div>
+                          <div className="mm-progress-info">
+                            <span className="mm-progress-pct">{dl.percent.toFixed(0)}%</span>
+                            <span className="mm-progress-bytes">
+                              {fmtGb(dl.downloaded)} / {fmtGb(dl.total)} GB
+                            </span>
+                            <button className="mm-btn-cancel" onClick={() => handleCancel(rec.filename)}>
+                              ✕ Batalkan
+                            </button>
+                          </div>
+                        </div>
+                      ) : done && local ? (
+                        <div className="mm-actions">
+                          {!isSelected && (
+                            <button className="mm-btn mm-btn-use" onClick={() => onLlmChange(local)}>
+                              ✓ Gunakan
+                            </button>
+                          )}
+                          <button className="mm-btn mm-btn-delete" onClick={() => handleDelete(local)}>
+                            🗑 Hapus
                           </button>
                         </div>
+                      ) : hasPartial ? (
+                        <div className="mm-resume-section">
+                          <p className="mm-resume-info">
+                            {fmtGb(partial)} GB tersimpan dari {rec.size_gb.toFixed(1)} GB
+                          </p>
+                          <div className="mm-progress-bar mm-progress-bar--slim">
+                            <div
+                              className="mm-progress-fill"
+                              style={{ width: `${Math.min((partial / (rec.size_gb * 1073741824)) * 100, 100)}%` }}
+                            />
+                          </div>
+                          <div className="mm-actions">
+                            <button className="mm-btn mm-btn-download" onClick={() => handleDownload(rec)}>
+                              ▶ Lanjutkan
+                            </button>
+                            <button
+                              className="mm-btn mm-btn-delete"
+                              onClick={() => handleDiscard(rec.filename)}
+                              title="Hapus file yang sudah diunduh dan mulai dari awal"
+                            >
+                              🗑 Mulai ulang
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          className="mm-btn mm-btn-download"
+                          onClick={() => handleDownload(rec)}
+                          disabled={rec.requires_token && !hfToken}
+                          title={rec.requires_token && !hfToken ? "Masukkan token HuggingFace terlebih dahulu" : ""}
+                        >
+                          ⬇ Unduh {rec.size_gb.toFixed(1)} GB
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {extraLocalModels.length > 0 && (
+              <div className="mm-section">
+                <h3 className="mm-section-title">Model Lokal Lainnya</h3>
+                <div className="mm-model-list">
+                  {extraLocalModels.map(m => (
+                    <div key={m.path} className={`mm-model-card downloaded ${selectedLlm?.path === m.path ? "active-model" : ""}`}>
+                      <div className="mm-model-header">
+                        <div className="mm-model-name-row">
+                          <span className="mm-model-name">{m.name}</span>
+                          {selectedLlm?.path === m.path && <span className="mm-tag active">✓ Aktif</span>}
+                        </div>
+                        <span className="mm-model-size">{(m.size_mb / 1024).toFixed(1)} GB</span>
                       </div>
-                    ) : done && local ? (
                       <div className="mm-actions">
-                        {!isSelected && (
-                          <button className="mm-btn mm-btn-use" onClick={() => onLlmChange(local)}>
+                        {selectedLlm?.path !== m.path && (
+                          <button className="mm-btn mm-btn-use" onClick={() => onLlmChange(m)}>
                             ✓ Gunakan
                           </button>
                         )}
-                        <button className="mm-btn mm-btn-delete" onClick={() => handleDelete(local)}>
+                        <button className="mm-btn mm-btn-delete" onClick={() => handleDelete(m)}>
                           🗑 Hapus
                         </button>
                       </div>
-                    ) : hasPartial ? (
-                      <div className="mm-resume-section">
-                        <p className="mm-resume-info">
-                          {fmtGb(partial)} GB tersimpan dari {rec.size_gb.toFixed(1)} GB
-                        </p>
-                        <div className="mm-progress-bar mm-progress-bar--slim">
-                          <div
-                            className="mm-progress-fill"
-                            style={{ width: `${Math.min((partial / (rec.size_gb * 1073741824)) * 100, 100)}%` }}
-                          />
-                        </div>
-                        <div className="mm-actions">
-                          <button
-                            className="mm-btn mm-btn-download"
-                            onClick={() => handleDownload(rec)}
-                          >
-                            ▶ Lanjutkan
-                          </button>
-                          <button
-                            className="mm-btn mm-btn-delete"
-                            onClick={() => handleDiscard(rec.filename)}
-                            title="Hapus file yang sudah diunduh dan mulai dari awal"
-                          >
-                            🗑 Mulai ulang
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <button
-                        className="mm-btn mm-btn-download"
-                        onClick={() => handleDownload(rec)}
-                        disabled={rec.requires_token && !hfToken}
-                        title={rec.requires_token && !hfToken ? "Masukkan token HuggingFace terlebih dahulu" : ""}
-                      >
-                        ⬇ Unduh {rec.size_gb.toFixed(1)} GB
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Extra local models (placed in vendor/llm manually) */}
-          {extraLocalModels.length > 0 && (
-            <div className="mm-section">
-              <h3 className="mm-section-title">Model Lokal Lainnya</h3>
-              <div className="mm-model-list">
-                {extraLocalModels.map(m => (
-                  <div key={m.path} className={`mm-model-card downloaded ${selectedLlm?.path === m.path ? "active-model" : ""}`}>
-                    <div className="mm-model-header">
-                      <div className="mm-model-name-row">
-                        <span className="mm-model-name">{m.name}</span>
-                        {selectedLlm?.path === m.path && <span className="mm-tag active">✓ Aktif</span>}
-                      </div>
-                      <span className="mm-model-size">{(m.size_mb / 1024).toFixed(1)} GB</span>
                     </div>
-                    <div className="mm-actions">
-                      {selectedLlm?.path !== m.path && (
-                        <button className="mm-btn mm-btn-use" onClick={() => onLlmChange(m)}>
-                          ✓ Gunakan
-                        </button>
-                      )}
-                      <button className="mm-btn mm-btn-delete" onClick={() => handleDelete(m)}>
-                        🗑 Hapus
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          <p className="mm-footer-note">
-            Model disimpan di <code>src-tauri/vendor/llm/</code> (dev) atau folder data app (produksi).
-            Anda juga bisa menaruh file .gguf secara manual ke folder tersebut.
-          </p>
-        </div>
+            <p className="mm-footer-note">
+              Model disimpan di <code>src-tauri/vendor/llm/</code> (dev) atau folder data app (produksi).
+              Anda juga bisa menaruh file .gguf secara manual ke folder tersebut.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

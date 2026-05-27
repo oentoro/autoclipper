@@ -138,6 +138,15 @@ body {
 }
 .loading-box p { color: var(--text2); font-size: 15px; }
 
+.transcribe-timer {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  letter-spacing: 0.05em;
+  margin-top: 4px;
+}
+
 /* Spinner */
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner {
@@ -263,6 +272,15 @@ body {
 .sidebar-stats-row { display: flex; justify-content: space-between; align-items: flex-end; }
 .sidebar-stats-right { text-align: right; }
 .sidebar-clip-block { margin-top: auto; padding-bottom: 4px; }
+.transcribe-duration-block { }
+.transcribe-duration-value {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+}
 .ai-reasoning {
   background: var(--bg3);
   border-radius: 8px;
@@ -1345,6 +1363,48 @@ body {
   padding: 1px 5px;
   border-radius: 3px;
   font-family: monospace;
+}
+
+/* Model manager tabs */
+.mm-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.mm-tab {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text2);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.mm-tab:hover { color: var(--text); }
+.mm-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Whisper tab */
+.mm-whisper-tab { padding: 0; }
+.mm-whisper-desc {
+  font-size: 12px;
+  color: var(--text2);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+/* Whisper preset badge */
+.mm-tag.whisper-preset {
+  background: rgba(139,92,246,0.15);
+  color: #a78bfa;
+  border: 1px solid rgba(139,92,246,0.3);
 }
 
 /* LLM model selector */

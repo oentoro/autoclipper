@@ -110,3 +110,22 @@ export interface DepsStatus {
   platform: string;
   build_notes: string[];
 }
+
+export interface WhisperModelInfo {
+  id: string;           // "tiny" | "base" | "medium" | "large-v3-turbo"
+  name: string;         // "Whisper Tiny"
+  backend: string;      // "mlx" | "faster-whisper"
+  preset: string;       // "fast" | "balanced" | "accurate" | "best"
+  preset_label: string; // "Cepat" | "Seimbang" | "Akurat" | "Terbaik"
+  description: string;
+  size_mb: number;
+  cached: boolean;
+  cache_path: string | null;
+}
+
+export interface WhisperDownloadProgress {
+  model_key: string;  // "{id}-{backend}"
+  percent: number;
+  done: boolean;
+  error: string | null;
+}

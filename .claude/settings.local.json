@@ -22,7 +22,16 @@
       "Bash(xargs kill -9)",
       "Bash(pkill -f \"tauri dev\")",
       "Bash(pkill -f \"cargo run\")",
-      "Bash(rtk grep *)"
+      "Bash(rtk grep *)",
+      "Bash(/opt/homebrew/bin/python3 -c \"import mlx_whisper; print\\('mlx-whisper OK di Homebrew Python'\\)\")",
+      "Bash(/opt/homebrew/bin/python3 -c ' *)",
+      "Bash(/opt/homebrew/bin/python3 *)",
+      "Bash(sysctl -n hw.physicalcpu hw.logicalcpu)",
+      "Bash(rtk find *)",
+      "Bash(echo \"Exit: $?\")",
+      "Read(//tmp/**)",
+      "Bash(rtk ps *)",
+      "Bash(xargs ls -la)"
     ]
   }
 }

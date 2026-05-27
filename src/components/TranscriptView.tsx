@@ -52,6 +52,7 @@ interface Props {
   selectedLlm: LlmModel | null;
   onLlmChange: (m: LlmModel) => void;
   onManageModels: () => void;
+  transcribeDuration?: number;
 }
 
 function sectionStatus(section: Section, segments: SrtSegment[], selectedIndices: Set<number>) {
@@ -104,6 +105,7 @@ export default function TranscriptView({
   selectedLlm,
   onLlmChange,
   onManageModels,
+  transcribeDuration = 0,
 }: Props) {
   const [searchText, setSearchText] = useState("");
   const [showSrt, setShowSrt] = useState(false);
@@ -183,6 +185,15 @@ export default function TranscriptView({
             <p className="sidebar-value selected-count">{selectedIndices.size}</p>
           </div>
         </div>
+
+        {transcribeDuration > 0 && (
+          <div className="sidebar-block transcribe-duration-block">
+            <p className="sidebar-label">Waktu transkripsi</p>
+            <p className="transcribe-duration-value">
+              {String(Math.floor(transcribeDuration / 60)).padStart(2, "0")}:{String(transcribeDuration % 60).padStart(2, "0")}
+            </p>
+          </div>
+        )}
 
         {/* Model AI */}
         <div className="sidebar-block">

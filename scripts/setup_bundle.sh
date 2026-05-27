@@ -56,6 +56,13 @@ BUNDLED_PY="$VENDOR/python/bin/python3"
 echo "[2/5] Installing Python packages..."
 "$BUNDLED_PY" -m pip install --quiet --upgrade pip
 "$BUNDLED_PY" -m pip install --quiet faster-whisper Pillow opencv-python
+
+# On Apple Silicon: install mlx-whisper for 5-15x faster transcription
+if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
+  echo "  [Apple Silicon] Installing mlx-whisper..."
+  "$BUNDLED_PY" -m pip install --quiet mlx-whisper
+  echo "  ✓ mlx-whisper installed (GPU/Neural Engine acceleration)"
+fi
 echo "  ✓ Packages installed"
 
 # ── llama-server ─────────────────────────────────────────────────────────────

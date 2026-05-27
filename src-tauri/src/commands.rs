@@ -92,6 +92,25 @@ pub struct FontInfo {
 #[derive(Default)]
 pub struct DownloadState(pub Mutex<std::collections::HashSet<String>>);
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WhisperModelInfo {
+    pub id: String,
+    pub name: String,
+    pub backend: String,
+    pub preset: String,
+    pub preset_label: String,
+    pub description: String,
+    pub size_mb: u64,
+    pub cached: bool,
+    pub cache_path: Option<String>,
+}
+
+#[derive(Default)]
+pub struct WhisperDownloadState {
+    pub cancel_keys: Mutex<std::collections::HashSet<String>>,
+    pub pids:        Mutex<std::collections::HashMap<String, u32>>,
+}
+
 pub struct LlamaServerState {
     process:      std::sync::Mutex<Option<std::process::Child>>,
     current_model: std::sync::Mutex<String>,
@@ -1212,8 +1231,36 @@ pub async fn transcribe_video(
         args.push(model_dir);
     }
 
-    let output = Command::new(&python).args(&args).output()
+    // Use tokio::process to stream stderr as progress events while waiting for JSON on stdout
+    use tokio::process::Command as TokioCommand;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut child = TokioCommand::new(&python)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Gagal menjalankan Whisper: {e}"))?;
+
+    // Stream stderr: PROGRESS:N → "transcribe-percent" event, other lines → "transcribe-progress"
+    if let Some(stderr) = child.stderr.take() {
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
+                    if let Ok(pct) = pct_str.trim().parse::<u8>() {
+                        let _ = app_clone.emit("transcribe-percent", pct);
+                    }
+                } else {
+                    let _ = app_clone.emit("transcribe-progress", &line);
+                }
+            }
+        });
+    }
+
+    let output = child.wait_with_output().await
+        .map_err(|e| format!("Whisper process error: {e}"))?;
 
     if !output.status.success() {
         return Err(format!("Whisper error: {}", String::from_utf8_lossy(&output.stderr)));
@@ -1832,4 +1879,275 @@ pub async fn get_video_duration(video_path: String) -> Result<f64, String> {
         .map_err(|e| format!("Parse error: {e}"))?;
     json["format"]["duration"].as_str().and_then(|s| s.parse().ok())
         .ok_or("Tidak bisa mendapatkan durasi video".to_string())
+}
+
+// ─── Whisper model management ─────────────────────────────────────────────────
+
+fn hf_hub_cache() -> PathBuf {
+    if let Ok(hf_home) = std::env::var("HF_HOME") {
+        return PathBuf::from(hf_home).join("hub");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".cache").join("huggingface").join("hub");
+    }
+    #[cfg(target_os = "windows")]
+    if let Ok(user) = std::env::var("USERPROFILE") {
+        return PathBuf::from(user).join(".cache").join("huggingface").join("hub");
+    }
+    PathBuf::from(".cache/huggingface/hub")
+}
+
+const WEIGHT_EXTS: &[&str] = &["safetensors", "npz", "bin", "pt"];
+
+fn snapshot_has_weights(snap_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(snap_dir) else { return false };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        // Follow symlinks (HF cache uses symlinks to blobs/)
+        let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if let Some(ext) = real.extension() {
+            if WEIGHT_EXTS.contains(&ext.to_str().unwrap_or("")) && real.exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn hf_model_cached(cache: &Path, repo_id: &str) -> Option<PathBuf> {
+    let dir_name = format!("models--{}", repo_id.replace('/', "--"));
+    let model_dir = cache.join(&dir_name);
+    if !model_dir.exists() { return None; }
+
+    // Check that at least one snapshot has actual weight files
+    let snaps_dir = model_dir.join("snapshots");
+    if let Ok(snaps) = std::fs::read_dir(&snaps_dir) {
+        for snap in snaps.flatten() {
+            if snapshot_has_weights(&snap.path()) {
+                return Some(model_dir);
+            }
+        }
+    }
+    None
+}
+
+struct WhisperModelDef {
+    id:           &'static str,
+    name:         &'static str,
+    mlx_repo:     &'static str,
+    fw_repo:      &'static str,
+    size_mb:      u64,
+    preset:       &'static str,
+    preset_label: &'static str,
+    description:  &'static str,
+}
+
+fn whisper_catalog() -> [WhisperModelDef; 4] {
+    [
+        WhisperModelDef {
+            id: "tiny", name: "Whisper Tiny",
+            mlx_repo: "mlx-community/whisper-tiny-mlx",
+            fw_repo:  "Systran/faster-whisper-tiny",
+            size_mb:  40, preset: "fast", preset_label: "Cepat",
+            description: "Tercepat, akurasi rendah — cocok untuk bahasa tunggal yang jelas",
+        },
+        WhisperModelDef {
+            id: "base", name: "Whisper Base",
+            mlx_repo: "mlx-community/whisper-base-mlx",
+            fw_repo:  "Systran/faster-whisper-base",
+            size_mb:  74, preset: "balanced", preset_label: "Seimbang",
+            description: "Cepat dengan akurasi yang cukup baik — rekomendasi untuk kebanyakan video",
+        },
+        WhisperModelDef {
+            id: "medium", name: "Whisper Medium",
+            mlx_repo: "mlx-community/whisper-medium-mlx",
+            fw_repo:  "Systran/faster-whisper-medium",
+            size_mb:  769, preset: "accurate", preset_label: "Akurat",
+            description: "Akurasi tinggi, lebih lambat — cocok untuk bahasa campuran atau aksen",
+        },
+        WhisperModelDef {
+            id: "large-v3-turbo", name: "Whisper Large v3 Turbo",
+            mlx_repo: "mlx-community/whisper-large-v3-turbo",
+            fw_repo:  "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+            size_mb:  1_600, preset: "best", preset_label: "Terbaik",
+            description: "Akurasi terbaik — ideal untuk bahasa campuran, terminologi khusus, atau kualitas audio rendah",
+        },
+    ]
+}
+
+#[tauri::command]
+pub async fn list_whisper_models(app: tauri::AppHandle) -> Vec<WhisperModelInfo> {
+    let is_apple_silicon = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let hf_cache = hf_hub_cache();
+
+    // vendor/models may also hold faster-whisper models
+    let vendor = vendor_dir(&app);
+    let vendor_models = vendor.as_deref().map(|v| v.join("models"));
+
+    // Also check dev source: src-tauri/vendor/models
+    let dev_models: Option<PathBuf> = (|| {
+        let exe = std::env::current_exe().ok()?;
+        let root = exe.parent()?.parent()?.parent()?.parent()?;
+        let p = root.join("src-tauri").join("vendor").join("models");
+        if p.exists() { Some(p) } else { None }
+    })();
+
+    let catalog = whisper_catalog();
+    let mut result = Vec::new();
+
+    for def in &catalog {
+        let backend = if is_apple_silicon { "mlx" } else { "faster-whisper" };
+        let repo    = if is_apple_silicon { def.mlx_repo } else { def.fw_repo };
+
+        // Check in HF cache
+        let mut cached_path = hf_model_cached(&hf_cache, repo);
+
+        // Also check vendor/models dirs (faster-whisper may be downloaded there)
+        if cached_path.is_none() {
+            if let Some(ref vm) = vendor_models {
+                cached_path = hf_model_cached(vm, repo);
+            }
+        }
+        if cached_path.is_none() {
+            if let Some(ref dm) = dev_models {
+                cached_path = hf_model_cached(dm, repo);
+            }
+        }
+
+        result.push(WhisperModelInfo {
+            id:           def.id.to_string(),
+            name:         def.name.to_string(),
+            backend:      backend.to_string(),
+            preset:       def.preset.to_string(),
+            preset_label: def.preset_label.to_string(),
+            description:  def.description.to_string(),
+            size_mb:      def.size_mb,
+            cached:       cached_path.is_some(),
+            cache_path:   cached_path.map(|p| p.to_string_lossy().to_string()),
+        });
+    }
+
+    result
+}
+
+#[tauri::command]
+pub async fn download_whisper_model(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WhisperDownloadState>,
+    model_id: String,
+    backend: String,
+) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    let model_key = format!("{model_id}-{backend}");
+    { state.cancel_keys.lock().unwrap().remove(&model_key); }
+
+    let vendor = vendor_dir(&app);
+    let v = vendor.as_deref();
+    let python = find_python(v);
+    let script = find_script(&app, "download_whisper_model.py");
+
+    // Download MLX models to HF default cache; faster-whisper to HF cache too
+    // (transcribe.py checks HF cache for both)
+    let cache_dir = hf_hub_cache().to_string_lossy().to_string();
+
+    let args = vec![
+        script,
+        "--model".to_string(), model_id.clone(),
+        "--backend".to_string(), backend.clone(),
+        "--cache-dir".to_string(), cache_dir,
+    ];
+
+    let mut child = TokioCommand::new(&python)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Gagal memulai download: {e}"))?;
+
+    // Store PID for cancellation
+    if let Some(pid) = child.id() {
+        state.pids.lock().unwrap().insert(model_key.clone(), pid);
+    }
+
+    // Stream stderr progress
+    let mk_clone = model_key.clone();
+    let app_clone = app.clone();
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
+                    if let Ok(pct) = pct_str.trim().parse::<u8>() {
+                        let _ = app_clone.emit("whisper-download-progress", serde_json::json!({
+                            "model_key": mk_clone,
+                            "percent": pct,
+                            "done": false,
+                            "error": null,
+                        }));
+                    }
+                }
+            }
+        });
+    }
+
+    let cancel_state = state.cancel_keys.lock().unwrap().contains(&model_key);
+    if cancel_state {
+        let _ = child.kill().await;
+        state.pids.lock().unwrap().remove(&model_key);
+        return Err("Download dibatalkan".to_string());
+    }
+
+    let output = child.wait_with_output().await
+        .map_err(|e| format!("Proses download error: {e}"))?;
+
+    state.pids.lock().unwrap().remove(&model_key);
+
+    if state.cancel_keys.lock().unwrap().remove(&model_key) {
+        return Err("Download dibatalkan".to_string());
+    }
+
+    if !output.status.success() {
+        let err_msg = String::from_utf8_lossy(&output.stdout).to_string();
+        let err: serde_json::Value = serde_json::from_str(&err_msg).unwrap_or_default();
+        let msg = err["error"].as_str().unwrap_or("Download gagal").to_string();
+        let _ = app.emit("whisper-download-progress", serde_json::json!({
+            "model_key": model_key,
+            "percent": 0,
+            "done": true,
+            "error": msg,
+        }));
+        return Err(msg);
+    }
+
+    let _ = app.emit("whisper-download-progress", serde_json::json!({
+        "model_key": model_key,
+        "percent": 100,
+        "done": true,
+        "error": null,
+    }));
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_whisper_download(
+    state: tauri::State<'_, WhisperDownloadState>,
+    model_key: String,
+) -> Result<(), String> {
+    state.cancel_keys.lock().unwrap().insert(model_key.clone());
+    if let Some(pid) = state.pids.lock().unwrap().get(&model_key).copied() {
+        #[cfg(unix)]
+        unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+        #[cfg(windows)]
+        { let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output(); }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_whisper_model(cache_path: String) -> Result<(), String> {
+    tokio::fs::remove_dir_all(&cache_path).await
+        .map_err(|e| format!("Gagal menghapus model: {e}"))
 }

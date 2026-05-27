@@ -2,6 +2,7 @@
 import sys
 import json
 import os
+import platform
 import subprocess
 import tempfile
 
@@ -12,6 +13,52 @@ PRESETS = {
     "best":     {"model": "large-v3-turbo", "beam_size": 5, "batch": False, "condition_prev": True},
 }
 
+# MLX model repos for Apple Silicon
+MLX_REPOS = {
+    "tiny":           "mlx-community/whisper-tiny-mlx",
+    "base":           "mlx-community/whisper-base-mlx",
+    "medium":         "mlx-community/whisper-medium-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+}
+
+# Fallback priority when preferred model is not cached
+MLX_FALLBACK_ORDER = ["large-v3-turbo", "medium", "base", "tiny"]
+
+_WEIGHT_EXTS = ('.safetensors', '.npz', '.bin', '.pt')
+
+def find_best_cached_mlx_path(preferred_model: str) -> tuple[str | None, str | None]:
+    """Return (local_snapshot_path, model_id) for the best complete cached MLX model.
+
+    A model is considered 'complete' only if its snapshot directory contains at
+    least one weight file (.safetensors / .npz / .bin / .pt).  Incomplete downloads
+    (directory exists but weights missing) are skipped.
+    Returns (None, None) if no complete model is found.
+    """
+    cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+    order = [preferred_model] + [m for m in MLX_FALLBACK_ORDER if m != preferred_model]
+    for model in order:
+        repo = MLX_REPOS.get(model, f"mlx-community/whisper-{model}-mlx")
+        cache_name = "models--" + repo.replace("/", "--")
+        snaps_dir = os.path.join(cache_dir, cache_name, "snapshots")
+        if not os.path.isdir(snaps_dir):
+            continue
+        for snap_hash in os.listdir(snaps_dir):
+            snap_dir = os.path.join(snaps_dir, snap_hash)
+            if not os.path.isdir(snap_dir):
+                continue
+            try:
+                files = os.listdir(snap_dir)
+            except OSError:
+                continue
+            has_weights = any(
+                os.path.exists(os.path.realpath(os.path.join(snap_dir, f)))
+                and f.endswith(_WEIGHT_EXTS)
+                for f in files
+            )
+            if has_weights:
+                return snap_dir, model
+    return None, None
+
 def seconds_to_srt_time(seconds: float) -> str:
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -19,9 +66,39 @@ def seconds_to_srt_time(seconds: float) -> str:
     millis = int((seconds - int(seconds)) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
+def is_apple_silicon() -> bool:
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+
+# ── Wrappers agar split_segment_by_words bisa handle kedua backend ──────────
+
+class _Word:
+    __slots__ = ("word", "start", "end")
+    def __init__(self, w):
+        if isinstance(w, dict):
+            self.word, self.start, self.end = w["word"], w["start"], w["end"]
+        else:
+            self.word, self.start, self.end = w.word, w.start, w.end
+
+class _Seg:
+    __slots__ = ("text", "start", "end", "words")
+    def __init__(self, s):
+        if isinstance(s, dict):
+            self.text  = s["text"]
+            self.start = s["start"]
+            self.end   = s["end"]
+            self.words = [_Word(w) for w in s.get("words") or []] or None
+        else:
+            self.text  = s.text
+            self.start = s.start
+            self.end   = s.end
+            ws = getattr(s, "words", None)
+            self.words = [_Word(w) for w in ws] if ws else None
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 def split_segment_by_words(seg, max_words: int) -> list[dict]:
-    words = getattr(seg, "words", None)
     text = seg.text.strip()
+    words = seg.words
 
     if not words:
         raw_words = text.split()
@@ -68,7 +145,6 @@ def build_output(raw_chunks: list[dict]) -> tuple:
     return segments, "\n".join(srt_lines)
 
 def detect_device() -> tuple[str, str]:
-    """Detect best available compute device (CUDA > CPU)."""
     try:
         import ctranslate2
         if ctranslate2.get_cuda_device_count() > 0:
@@ -79,25 +155,16 @@ def detect_device() -> tuple[str, str]:
 
 def get_cpu_threads() -> int:
     cpu_count = os.cpu_count() or 4
-    # Leave 1 core for OS; minimum 4 for performance
     return max(4, cpu_count - 1)
 
 def extract_audio(video_path: str, ffmpeg: str) -> str | None:
-    """
-    Pre-extract 16kHz mono WAV from video using FFmpeg.
-    Whisper only needs 16kHz mono — skipping video decode saves significant time
-    on high-bitrate or high-resolution videos.
-    Returns temp WAV path, or None if extraction fails (fall back to direct path).
-    """
+    """Pre-extract 16kHz mono WAV — skip video decode overhead."""
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
     try:
         result = subprocess.run(
             [ffmpeg, "-y", "-i", video_path,
-             "-vn",                    # no video
-             "-ar", "16000",           # 16kHz (Whisper native sample rate)
-             "-ac", "1",               # mono
-             "-sample_fmt", "s16",     # 16-bit PCM
+             "-vn", "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
              "-f", "wav", tmp.name],
             capture_output=True, timeout=300
         )
@@ -111,16 +178,90 @@ def extract_audio(video_path: str, ffmpeg: str) -> str | None:
         pass
     return None
 
-def transcribe(video_path: str, model_dir: str | None = None,
-               language: str | None = None, preset: str = "balanced",
-               max_words: int = 0) -> dict:
-    from faster_whisper import WhisperModel
+def get_wav_duration(path: str) -> float:
+    """Return WAV duration in seconds."""
+    try:
+        import wave as _wave
+        with _wave.open(path, "rb") as f:
+            return f.getnframes() / float(f.getframerate())
+    except Exception:
+        return 0.0
 
-    cfg = PRESETS.get(preset, PRESETS["balanced"])
-    model_name     = cfg["model"]
-    beam_size      = cfg["beam_size"]
-    use_batch      = cfg["batch"]
-    condition_prev = cfg["condition_prev"]
+def emit_progress(pct: int) -> None:
+    """Write a PROGRESS line to stderr — picked up by the Rust layer."""
+    print(f"PROGRESS:{min(100, max(0, pct))}", file=sys.stderr, flush=True)
+
+# ── MLX backend (Apple Silicon) ──────────────────────────────────────────────
+
+def _transcribe_mlx(audio_path: str, model_name: str, language: str | None,
+                    beam_size: int, condition_prev: bool,
+                    word_timestamps: bool, model_dir: str | None,
+                    total_duration: float = 0.0) -> tuple[list, str]:
+    import mlx_whisper, threading, time
+
+    local_path, actual_model = find_best_cached_mlx_path(model_name)
+    if local_path is None:
+        raise RuntimeError("No complete cached MLX model found — use faster-whisper instead")
+    if actual_model != model_name:
+        print(f"[transcribe] MLX model '{model_name}' tidak lengkap/tidak ada, pakai '{actual_model}'", file=sys.stderr)
+
+    result_box: list = [None, None]  # [result, exception]
+    done = threading.Event()
+
+    def worker():
+        import contextlib
+        try:
+            # Pass local snapshot path directly → no HF Hub network access at all.
+            # mlx-whisper 0.4.x has BeamSearchDecoder unimplemented; ANY integer
+            # beam_size (including 1) raises NotImplementedError.  beam_size=None
+            # is the only value that selects the working GreedyDecoder.
+            # Redirect mlx-whisper's stdout to stderr so "Detected language: ..."
+            # lines don't pollute our JSON output on stdout.
+            with contextlib.redirect_stdout(sys.stderr):
+                result_box[0] = mlx_whisper.transcribe(
+                    audio_path,
+                    path_or_hf_repo=local_path,
+                    language=language or None,
+                    word_timestamps=word_timestamps,
+                    condition_on_previous_text=condition_prev,
+                    beam_size=None,
+                    temperature=0.0,
+                    verbose=False,
+                )
+        except Exception as exc:
+            result_box[1] = exc
+        finally:
+            done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    # Emit time-based progress while mlx runs in background thread.
+    # Use 6× realtime as conservative floor so estimation stays under actual
+    # completion time even for complex/long audio.
+    estimated_secs = max(1.0, total_duration / 6) if total_duration > 0 else 300.0
+    start = time.monotonic()
+    while not done.wait(timeout=0.8):
+        elapsed = time.monotonic() - start
+        # Hard-cap at 95 — 100% is reserved for after build_output
+        pct = min(95, int(elapsed / estimated_secs * 95))
+        emit_progress(pct)
+
+    t.join()
+
+    if result_box[1] is not None:
+        raise result_box[1]
+
+    r = result_box[0]
+    return r["segments"], r.get("language") or "unknown"
+
+# ── faster-whisper backend (CUDA / CPU) ──────────────────────────────────────
+
+def _transcribe_faster_whisper(audio_path: str, model_name: str, language: str | None,
+                                beam_size: int, use_batch: bool, condition_prev: bool,
+                                word_timestamps: bool, model_dir: str | None,
+                                total_duration: float = 0.0) -> tuple[list, str]:
+    from faster_whisper import WhisperModel
 
     device, compute_type = detect_device()
     cpu_threads = get_cpu_threads()
@@ -138,37 +279,81 @@ def transcribe(video_path: str, model_dir: str | None = None,
 
     model = WhisperModel(model_name, **model_kwargs)
 
-    # Pre-extract audio for faster inference (skip video decode overhead)
-    ffmpeg = os.environ.get("AUTOCLIPPER_FFMPEG", "ffmpeg")
-    audio_path = extract_audio(video_path, ffmpeg)
-    input_path = audio_path if audio_path else video_path
-
-    need_words = max_words > 0
     transcribe_kwargs = dict(
         language=language or None,
         beam_size=beam_size,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500),
-        word_timestamps=need_words,
+        word_timestamps=word_timestamps,
         condition_on_previous_text=condition_prev,
     )
 
-    segments_raw = None
-    info = None
+    if use_batch:
+        try:
+            from faster_whisper import BatchedInferencePipeline
+            batched = BatchedInferencePipeline(model=model)
+            segs_raw, info = batched.transcribe(audio_path, batch_size=16, **transcribe_kwargs)
+        except Exception:
+            segs_raw, info = model.transcribe(audio_path, **transcribe_kwargs)
+    else:
+        segs_raw, info = model.transcribe(audio_path, **transcribe_kwargs)
+
+    # Consume generator while emitting real segment-based progress.
+    # Cap at 98 — 99-100 reserved for build_output + JSON serialization.
+    segments_out = []
+    for seg in segs_raw:
+        segments_out.append(seg)
+        if total_duration > 0:
+            emit_progress(min(98, int(seg.end / total_duration * 98)))
+        else:
+            emit_progress(50)  # no duration info — show indeterminate midpoint
+
+    return segments_out, info.language or "unknown"
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+def transcribe(video_path: str, model_dir: str | None = None,
+               language: str | None = None, preset: str = "balanced",
+               max_words: int = 0) -> dict:
+
+    cfg = PRESETS.get(preset, PRESETS["balanced"])
+    model_name     = cfg["model"]
+    beam_size      = cfg["beam_size"]
+    use_batch      = cfg["batch"]
+    condition_prev = cfg["condition_prev"]
+    need_words     = max_words > 0
+
+    ffmpeg = os.environ.get("AUTOCLIPPER_FFMPEG", "ffmpeg")
+    audio_path = extract_audio(video_path, ffmpeg)
+    input_path = audio_path if audio_path else video_path
+    total_duration = get_wav_duration(input_path) if audio_path else 0.0
 
     try:
-        if use_batch:
+        use_mlx = is_apple_silicon()
+        if use_mlx:
             try:
-                from faster_whisper import BatchedInferencePipeline
-                batched = BatchedInferencePipeline(model=model)
-                segments_raw, info = batched.transcribe(input_path, batch_size=16, **transcribe_kwargs)
-            except Exception:
-                segments_raw, info = model.transcribe(input_path, **transcribe_kwargs)
-        else:
-            segments_raw, info = model.transcribe(input_path, **transcribe_kwargs)
+                print(f"[transcribe] Backend: mlx-whisper (Apple Silicon GPU) — model: {model_name}", file=sys.stderr)
+                segs_raw, detected_lang = _transcribe_mlx(
+                    input_path, model_name, language,
+                    beam_size, condition_prev, need_words, model_dir,
+                    total_duration=total_duration,
+                )
+                segs_wrapped = [_Seg(s) for s in segs_raw]
+            except Exception as e:
+                print(f"[transcribe] mlx-whisper gagal ({e}), fallback ke faster-whisper", file=sys.stderr)
+                use_mlx = False
+
+        if not use_mlx:
+            print(f"[transcribe] Backend: faster-whisper (CPU) — model: {model_name}", file=sys.stderr)
+            segs_raw, detected_lang = _transcribe_faster_whisper(
+                input_path, model_name, language,
+                beam_size, use_batch, condition_prev, need_words, model_dir,
+                total_duration=total_duration,
+            )
+            segs_wrapped = [_Seg(s) for s in segs_raw]
 
         raw_chunks = []
-        for seg in segments_raw:
+        for seg in segs_wrapped:
             if not seg.text.strip():
                 continue
             if need_words:
@@ -178,10 +363,13 @@ def transcribe(video_path: str, model_dir: str | None = None,
 
         segments, srt_content = build_output(raw_chunks)
 
+        # Emit 100% only after everything is built — right before printing JSON
+        emit_progress(100)
+
         return {
             "segments":          segments,
             "srt_content":       srt_content,
-            "detected_language": info.language or "unknown",
+            "detected_language": detected_lang,
         }
     finally:
         if audio_path:

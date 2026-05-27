@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -128,6 +128,10 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingMsg, setLoadingMsg] = useState<string>("");
+  const [transcribeElapsed, setTranscribeElapsed] = useState<number>(0);
+  const [transcribeDuration, setTranscribeDuration] = useState<number>(0);
+  const transcribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const transcribeStartRef = useRef<number>(0);
 
   function handleVideoSelect(path: string) {
     setVideoPath(path);
@@ -137,13 +141,29 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setSelectedIndices(new Set());
     setSections([]);
     setClipResult(null);
+    setTranscribeDuration(0);
     setStep("ready");
   }
 
   async function startTranscription() {
     setStep("transcribing");
     setLoading(true);
-    setLoadingMsg("Sedang mentranskripsi audio... (mungkin beberapa menit)");
+    setLoadingMsg("Mempersiapkan transkripsi...");
+    setTranscribeElapsed(0);
+    setTranscribeDuration(0);
+    transcribeStartRef.current = Date.now();
+    transcribeTimerRef.current = setInterval(() => setTranscribeElapsed(s => s + 1), 1000);
+
+    const unlistenProgress = await listen<string>("transcribe-progress", event => {
+      const line = event.payload;
+      if (line.includes("mlx-whisper")) {
+        setLoadingMsg("Transkripsi dengan GPU (Apple Silicon)...");
+      } else if (line.includes("faster-whisper")) {
+        setLoadingMsg("Transkripsi dengan CPU...");
+      } else if (line.includes("Selesai")) {
+        setLoadingMsg("Memproses hasil...");
+      }
+    });
 
     try {
       const result = await invoke<TranscribeResult>("transcribe_video", {
@@ -152,16 +172,25 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         preset: transcribePreset,
         maxWordsPerSub,
       });
+      unlistenProgress();
       setSegments(result.segments);
       setSrtContent(result.srt_content);
       setDetectedLanguage(result.detected_language);
       setStep("transcript");
     } catch (e) {
+      unlistenProgress();
       setError(String(e));
       setStep("ready");
     } finally {
+      const elapsed = Math.round((Date.now() - transcribeStartRef.current) / 1000);
+      if (transcribeTimerRef.current) {
+        clearInterval(transcribeTimerRef.current);
+        transcribeTimerRef.current = null;
+      }
+      setTranscribeDuration(elapsed);
       setLoading(false);
       setLoadingMsg("");
+      setTranscribeElapsed(0);
     }
   }
 
@@ -316,6 +345,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setError("");
     setSourceLanguage("");
     setDetectedLanguage("");
+    setTranscribeDuration(0);
   }
 
   if (depsChecking) {
@@ -406,6 +436,11 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             <div className="loading-box">
               <div className="spinner" />
               <p>{loadingMsg}</p>
+              {step === "transcribing" && (
+                <div className="transcribe-timer">
+                  {String(Math.floor(transcribeElapsed / 60)).padStart(2, "0")}:{String(transcribeElapsed % 60).padStart(2, "0")}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -499,6 +534,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             sections={sections}
             burnSubtitles={burnSubtitles}
             aspectRatio={aspectRatio}
+            transcribeDuration={transcribeDuration}
             onToggle={toggleSegment}
             onSelectAll={selectAll}
             onClearAll={clearAll}
