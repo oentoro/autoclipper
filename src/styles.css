@@ -834,6 +834,7 @@ body {
   border-radius: var(--radius);
   overflow: hidden;
   margin-bottom: 10px;
+  flex-shrink: 0;
 }
 .section-group.section-selected { border-color: var(--accent2); }
 .section-group.section-partial  { border-color: rgba(108,99,255,0.5); }
@@ -932,6 +933,8 @@ body {
   flex-direction: column;
   gap: 4px;
   background: var(--bg);
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 /* Compact segment card (inside section) */

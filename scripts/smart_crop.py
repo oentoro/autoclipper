@@ -317,16 +317,18 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
 def _smooth_adaptive(arr: np.ndarray, fps: float, src_w: int) -> np.ndarray:
     """
     EMA with two time constants:
-    - Slow (0.5 s): stable tracking, suppresses jitter.
-    - Fast (0.08 s): follows fast focus changes (>15% frame width jump).
+    - Slow (1.5 s): smooth cinematic tracking for normal movement.
+    - Fast (0.7 s): follows large speaker cuts (>25% frame width jump).
+    Raising both constants from the original 0.5 s / 0.08 s makes the
+    crop pan feel gradual rather than snapping.
     """
     if len(arr) == 0:
         return arr
     result = np.empty_like(arr)
     result[0] = arr[0]
-    alpha_slow = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.5))
-    alpha_fast = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.08))
-    threshold = src_w * 0.15
+    alpha_slow = 1.0 - np.exp(-1.0 / max(1.0, fps * 1.5))
+    alpha_fast = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.7))
+    threshold = src_w * 0.25
     for i in range(1, len(arr)):
         alpha = alpha_fast if abs(arr[i] - result[i - 1]) > threshold else alpha_slow
         result[i] = alpha * arr[i] + (1.0 - alpha) * result[i - 1]
