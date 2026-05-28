@@ -101,6 +101,7 @@ export interface DepCheck {
   path?: string;
   error?: string;
   install_cmd?: string;
+  download_url?: string;
   optional: boolean;
 }
 

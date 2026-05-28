@@ -40,6 +40,7 @@
       "../scripts/transcribe.py": "scripts/transcribe.py",
       "../scripts/burn_subtitles.py": "scripts/burn_subtitles.py",
       "../scripts/smart_crop.py": "scripts/smart_crop.py",
+      "../scripts/download_whisper_model.py": "scripts/download_whisper_model.py",
       "../scripts/download_llama_server.py": "scripts/download_llama_server.py",
       "vendor/bin/*": "vendor/bin/"
     }

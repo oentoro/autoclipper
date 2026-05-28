@@ -72,6 +72,7 @@ pub struct DepCheck {
     pub path: Option<String>,
     pub error: Option<String>,
     pub install_cmd: Option<String>,
+    pub download_url: Option<String>,
     pub optional: bool,
 }
 
@@ -1072,6 +1073,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         path: if python_ok { Some(python.clone()) } else { None },
         error: if !python_ok { Some("Python 3 tidak ditemukan".to_string()) } else { None },
         install_cmd: if !python_ok { Some(py_install.to_string()) } else { None },
+        download_url: if !python_ok { Some("https://www.python.org/downloads/".to_string()) } else { None },
         optional: false,
     });
 
@@ -1084,6 +1086,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         path: if ffmpeg_ok { Some(ffmpeg.clone()) } else { None },
         error: if !ffmpeg_ok { Some("FFmpeg tidak ditemukan".to_string()) } else { None },
         install_cmd: if !ffmpeg_ok { Some(ff_install.to_string()) } else { None },
+        download_url: None,
         optional: false,
     });
 
@@ -1096,6 +1099,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         path: if ffprobe_ok { Some(ffprobe) } else { None },
         error: if !ffprobe_ok { Some("ffprobe tidak ditemukan".to_string()) } else { None },
         install_cmd: if !ffprobe_ok { Some(ff_install.to_string()) } else { None },
+        download_url: None,
         optional: false,
     });
 
@@ -1108,6 +1112,20 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         path: None,
         error: if !whisper_ok { Some("Package faster-whisper belum terinstall".to_string()) } else { None },
         install_cmd: if !whisper_ok { Some(format!("{pip} install faster-whisper")) } else { None },
+        download_url: None,
+        optional: false,
+    });
+
+    let hf_hub_ok = python_ok && Command::new(&python)
+        .args(["-c", "import huggingface_hub"])
+        .output().map(|o| o.status.success()).unwrap_or(false);
+    checks.push(DepCheck {
+        name: format!("huggingface-hub ({source})"),
+        ok: hf_hub_ok,
+        path: None,
+        error: if !hf_hub_ok { Some("Package huggingface-hub belum terinstall — diperlukan untuk download model Whisper".to_string()) } else { None },
+        install_cmd: if !hf_hub_ok { Some(format!("{pip} install huggingface_hub")) } else { None },
+        download_url: None,
         optional: false,
     });
 
@@ -1120,6 +1138,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         path: None,
         error: if !pillow_ok { Some("Package Pillow belum terinstall".to_string()) } else { None },
         install_cmd: if !pillow_ok { Some(format!("{pip} install Pillow")) } else { None },
+        download_url: None,
         optional: false,
     });
 
@@ -1132,6 +1151,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         path: if scripts_ok { Some(transcribe_path) } else { None },
         error: if !scripts_ok { Some("Script files tidak ditemukan".to_string()) } else { None },
         install_cmd: None,
+        download_url: None,
         optional: false,
     });
 
@@ -1148,6 +1168,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         install_cmd: if !llama_server_ok {
             Some(format!("{python} \"{llama_script}\""))
         } else { None },
+        download_url: None,
         optional: true,
     });
 
@@ -1160,6 +1181,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         path: None,
         error: if !opencv_ok { Some("opencv-python belum terinstall — diperlukan untuk Smart Crop".to_string()) } else { None },
         install_cmd: if !opencv_ok { Some(format!("{pip} install opencv-python")) } else { None },
+        download_url: None,
         optional: true,
     });
 
@@ -1179,6 +1201,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
             Some("Ollama tidak berjalan (opsional — llama-server sudah tersedia)".to_string())
         } else { None },
         install_cmd: if !ollama_ok && !bundled { Some("ollama serve".to_string()) } else { None },
+        download_url: if !ollama_ok && !bundled { Some("https://ollama.com/download".to_string()) } else { None },
         optional: true,
     });
 
@@ -1213,6 +1236,7 @@ pub async fn transcribe_video(
     let vendor = vendor_dir(&app);
     let v = vendor.as_deref();
     let python = find_python(v);
+    let ffmpeg = find_ffmpeg(v);
     let script = find_script(&app, "transcribe.py");
 
     let mut args = vec![script, video_path];
@@ -1238,6 +1262,7 @@ pub async fn transcribe_video(
 
     let mut child = TokioCommand::new(&python)
         .args(&args)
+        .env("AUTOCLIPPER_FFMPEG", &ffmpeg)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -1263,10 +1288,15 @@ pub async fn transcribe_video(
     let output = child.wait_with_output().await
         .map_err(|e| format!("Whisper process error: {e}"))?;
 
-    if !output.status.success() {
-        return Err(format!("Whisper error: {}", String::from_utf8_lossy(&output.stderr)));
-    }
     let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() {
+        // Error JSON is written to stdout (stderr is consumed by progress reader)
+        let err: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_default();
+        let error = err["error"].as_str().unwrap_or("Whisper gagal").to_string();
+        let tb = err["traceback"].as_str().unwrap_or("").trim().to_string();
+        let msg = if tb.is_empty() { error } else { format!("{error}\n\n{tb}") };
+        return Err(msg);
+    }
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Gagal parse hasil transkripsi: {e}\nOutput: {stdout}"))
 }
@@ -1364,6 +1394,137 @@ pub async fn classify_transcript(
     Ok(result)
 }
 
+async fn exec_smart_crop(
+    app: &tauri::AppHandle,
+    python: &str,
+    ffmpeg: &str,
+    input: &str,
+    output: &str,
+    aspect_ratio: &str,
+) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    let script = find_script(app, "smart_crop.py");
+    let mut cmd = TokioCommand::new(python);
+    cmd.args([&script, input, output, "--ratio", aspect_ratio])
+        .env("AUTOCLIPPER_FFMPEG", ffmpeg)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let mut child = cmd.spawn()
+        .map_err(|e| format!("Gagal menjalankan smart_crop.py: {e}"))?;
+
+    if let Some(stderr) = child.stderr.take() {
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
+                    if let Ok(pct) = pct_str.trim().parse::<u8>() {
+                        let _ = app_clone.emit("clip-smart-percent", pct);
+                    }
+                }
+            }
+        });
+    }
+
+    let output_r = child.wait_with_output().await
+        .map_err(|e| format!("Gagal menunggu smart_crop.py: {e}"))?;
+
+    if output_r.status.success() {
+        Ok(())
+    } else {
+        let stdout = String::from_utf8_lossy(&output_r.stdout);
+        let stderr_str = String::from_utf8_lossy(&output_r.stderr);
+        let src = if !stdout.trim().is_empty() { stdout } else { stderr_str };
+        let err: serde_json::Value = serde_json::from_str(&src).unwrap_or_default();
+        let msg = err["error"].as_str().map(|s| s.to_string())
+            .unwrap_or_else(|| src.trim().to_string());
+        Err(format!("Smart crop gagal: {msg}"))
+    }
+}
+
+async fn exec_burn_subs(
+    app: &tauri::AppHandle,
+    python: &str,
+    ffmpeg: &str,
+    ffprobe: &str,
+    input: &str,
+    output_path: &str,
+    entries: Vec<serde_json::Value>,
+    font_size: u32,
+    font_path: &str,
+    subtitle_style_json: &str,
+) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    let entries_path = std::env::temp_dir().join("autoclipper_entries.json");
+    std::fs::write(&entries_path, serde_json::to_string(&entries).unwrap())
+        .map_err(|e| format!("Gagal menulis entries JSON: {e}"))?;
+
+    let script = find_script(app, "burn_subtitles.py");
+    let entries_str = entries_path.to_string_lossy().to_string();
+    let mut burn_args = vec![script, input.to_string(), entries_str, output_path.to_string()];
+    if font_size > 0 {
+        burn_args.push("--font-size".to_string());
+        burn_args.push(font_size.to_string());
+    }
+    if !font_path.is_empty() {
+        burn_args.push("--font".to_string());
+        burn_args.push(font_path.to_string());
+    }
+    if !subtitle_style_json.is_empty() && subtitle_style_json != "{}" {
+        burn_args.push("--style".to_string());
+        burn_args.push(subtitle_style_json.to_string());
+    }
+
+    let mut cmd = TokioCommand::new(python);
+    cmd.args(&burn_args)
+        .env("AUTOCLIPPER_FFMPEG", ffmpeg)
+        .env("AUTOCLIPPER_FFPROBE", ffprobe)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let mut child = cmd.spawn()
+        .map_err(|e| format!("Gagal menjalankan burn_subtitles.py: {e}"))?;
+
+    if let Some(stderr) = child.stderr.take() {
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
+                    if let Ok(pct) = pct_str.trim().parse::<u8>() {
+                        let _ = app_clone.emit("clip-burn-percent", pct);
+                    }
+                }
+            }
+        });
+    }
+
+    let output = child.wait_with_output().await
+        .map_err(|e| format!("Gagal menunggu burn_subtitles.py: {e}"))?;
+    let _ = std::fs::remove_file(&entries_path);
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        let src = if !stdout.trim().is_empty() { stdout } else { stderr_str };
+        let err: serde_json::Value = serde_json::from_str(&src).unwrap_or_default();
+        let msg = err["error"].as_str().map(|s| s.to_string())
+            .unwrap_or_else(|| src.trim().to_string());
+        Err(format!("Subtitle burn gagal: {msg}"))
+    }
+}
+
 #[tauri::command]
 pub async fn clip_video(
     app: tauri::AppHandle,
@@ -1403,52 +1564,7 @@ pub async fn clip_video(
         build_crop_filter(&aspect_ratio, w, h)
     };
 
-    // Helper: run smart_crop.py on `input`, write to `output`
-    let run_smart_crop = |input: &str, output: &str| -> Result<(), String> {
-        let script = find_script(&app, "smart_crop.py");
-        let out = Command::new(&python)
-            .args([&script, input, output, "--ratio", &aspect_ratio])
-            .env("AUTOCLIPPER_FFMPEG", &ffmpeg)
-            .output()
-            .map_err(|e| format!("Gagal menjalankan smart_crop.py: {e}"))?;
-        if out.status.success() { Ok(()) } else {
-            Err(format!("Smart crop gagal:\n{}", String::from_utf8_lossy(&out.stderr)))
-        }
-    };
 
-    // Helper: run burn_subtitles.py on `input`, write to `output_path`
-    let run_burn_subs = |input: &str| -> Result<(), String> {
-        let entries = build_retimed_entries(&groups);
-        let entries_path = std::env::temp_dir().join("autoclipper_entries.json");
-        std::fs::write(&entries_path, serde_json::to_string(&entries).unwrap())
-            .map_err(|e| format!("Gagal menulis entries JSON: {e}"))?;
-
-        let script = find_script(&app, "burn_subtitles.py");
-        let entries_str = entries_path.to_string_lossy().to_string();
-        let mut burn_args = vec![script, input.to_string(), entries_str, output_path.clone()];
-        if font_size > 0 {
-            burn_args.push("--font-size".to_string());
-            burn_args.push(font_size.to_string());
-        }
-        if !font_path.is_empty() {
-            burn_args.push("--font".to_string());
-            burn_args.push(font_path.clone());
-        }
-        if !subtitle_style_json.is_empty() && subtitle_style_json != "{}" {
-            burn_args.push("--style".to_string());
-            burn_args.push(subtitle_style_json.clone());
-        }
-        let out = Command::new(&python)
-            .args(&burn_args)
-            .env("AUTOCLIPPER_FFMPEG", &ffmpeg)
-            .env("AUTOCLIPPER_FFPROBE", &ffprobe)
-            .output()
-            .map_err(|e| format!("Gagal menjalankan burn_subtitles.py: {e}"))?;
-        let _ = std::fs::remove_file(&entries_path);
-        if out.status.success() { Ok(()) } else {
-            Err(format!("Subtitle burn gagal: {}", String::from_utf8_lossy(&out.stderr)))
-        }
-    };
 
     match (burn_subtitles, needs_smart) {
         // ── Case 1: no burn, no smart crop ────────────────────────────────
@@ -1460,7 +1576,8 @@ pub async fn clip_video(
         (true, false) => {
             let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
             concat_groups(&ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), tmp.to_str().unwrap())?;
-            let r = run_burn_subs(tmp.to_str().unwrap());
+            let entries = build_retimed_entries(&groups);
+            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json).await;
             let _ = std::fs::remove_file(&tmp);
             r?;
         }
@@ -1469,7 +1586,7 @@ pub async fn clip_video(
         (false, true) => {
             let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
             concat_groups(&ffmpeg, &video_path, &groups, None, tmp.to_str().unwrap())?;
-            let r = run_smart_crop(tmp.to_str().unwrap(), &output_path);
+            let r = exec_smart_crop(&app, &python, &ffmpeg, tmp.to_str().unwrap(), &output_path, &aspect_ratio).await;
             let _ = std::fs::remove_file(&tmp);
             r?;
         }
@@ -1479,10 +1596,11 @@ pub async fn clip_video(
             let tmp_concat = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
             let tmp_smart  = std::env::temp_dir().join("autoclipper_smart_tmp.mp4");
             concat_groups(&ffmpeg, &video_path, &groups, None, tmp_concat.to_str().unwrap())?;
-            let r = run_smart_crop(tmp_concat.to_str().unwrap(), tmp_smart.to_str().unwrap());
+            let r = exec_smart_crop(&app, &python, &ffmpeg, tmp_concat.to_str().unwrap(), tmp_smart.to_str().unwrap(), &aspect_ratio).await;
             let _ = std::fs::remove_file(&tmp_concat);
             r?;
-            let r = run_burn_subs(tmp_smart.to_str().unwrap());
+            let entries = build_retimed_entries(&groups);
+            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp_smart.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json).await;
             let _ = std::fs::remove_file(&tmp_smart);
             r?;
         }
@@ -1904,10 +2022,11 @@ fn snapshot_has_weights(snap_dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(snap_dir) else { return false };
     for entry in entries.flatten() {
         let p = entry.path();
-        // Follow symlinks (HF cache uses symlinks to blobs/)
-        let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
-        if let Some(ext) = real.extension() {
-            if WEIGHT_EXTS.contains(&ext.to_str().unwrap_or("")) && real.exists() {
+        // Use the symlink/file's own name extension, NOT the resolved target.
+        // HF Hub on Windows stores blobs without extensions; the snapshot
+        // entries (symlinks or hardlinks) carry the real name (e.g. model.bin).
+        if let Some(ext) = p.extension() {
+            if WEIGHT_EXTS.contains(&ext.to_str().unwrap_or("")) && p.exists() {
                 return true;
             }
         }
@@ -2060,11 +2179,13 @@ pub async fn download_whisper_model(
         "--cache-dir".to_string(), cache_dir,
     ];
 
-    let mut child = TokioCommand::new(&python)
-        .args(&args)
+    let mut cmd = TokioCommand::new(&python);
+    cmd.args(&args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW — suppress console flash
+    let mut child = cmd.spawn()
         .map_err(|e| format!("Gagal memulai download: {e}"))?;
 
     // Store PID for cancellation

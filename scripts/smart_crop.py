@@ -17,6 +17,7 @@ Speaker selection (when multiple faces are visible):
 
 import sys
 import os
+import json
 import subprocess
 import argparse
 import urllib.request
@@ -25,13 +26,24 @@ try:
     import cv2
     import numpy as np
 except ImportError as _e:
-    print(
-        f"Error: {_e}\n"
-        "Smart Crop membutuhkan opencv-python.\n"
-        "Jalankan: python3 -m pip install opencv-python --break-system-packages",
-        file=sys.stderr,
-    )
+    os.write(2, (f"Error: {_e}\nSmart Crop membutuhkan opencv-python.\n"
+                 "Jalankan: python3 -m pip install opencv-python\n").encode("utf-8"))
+    os.write(1, (json.dumps({"error": str(_e)}) + "\n").encode("utf-8"))
     sys.exit(1)
+
+
+def emit_progress(pct: int) -> None:
+    try:
+        os.write(2, f"PROGRESS:{min(100, max(0, pct))}\n".encode("ascii"))
+    except OSError:
+        pass
+
+
+def emit_status(msg: str) -> None:
+    try:
+        os.write(2, (msg + "\n").encode("utf-8", errors="replace"))
+    except OSError:
+        pass
 
 
 # ── YuNet model management ────────────────────────────────────────────────────
@@ -54,13 +66,13 @@ def _download_yunet() -> bool:
         return True
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        print("[smart_crop] Mengunduh model face detection YuNet (~340 KB)...", file=sys.stderr)
+        emit_status("[smart_crop] Mengunduh model face detection YuNet (~340 KB)...")
         urllib.request.urlretrieve(_YUNET_URL, path + ".tmp")
         os.rename(path + ".tmp", path)
-        print("[smart_crop] Model YuNet berhasil diunduh.", file=sys.stderr)
+        emit_status("[smart_crop] Model YuNet berhasil diunduh.")
         return True
     except Exception as e:
-        print(f"[smart_crop] Download YuNet gagal ({e}), pakai cascade fallback.", file=sys.stderr)
+        emit_status(f"[smart_crop] Download YuNet gagal ({e}), pakai cascade fallback.")
         if os.path.exists(path + ".tmp"):
             try:
                 os.remove(path + ".tmp")
@@ -85,7 +97,7 @@ def _load_yunet(frame_w: int, frame_h: int):
         )
         return det
     except Exception as e:
-        print(f"[smart_crop] YuNet load gagal ({e}), pakai cascade fallback.", file=sys.stderr)
+        emit_status(f"[smart_crop] YuNet load gagal ({e}), pakai cascade fallback.")
         return None
 
 
@@ -254,6 +266,7 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
     # Open once to read a test frame for YuNet input-size init
     cap_tmp = cv2.VideoCapture(video_path)
     ret, test_frame = cap_tmp.read()
+    total_frames = max(1, int(cap_tmp.get(cv2.CAP_PROP_FRAME_COUNT)))
     cap_tmp.release()
     fh_px = test_frame.shape[0] if ret else 720
     fw_px = test_frame.shape[1] if ret else 1280
@@ -261,9 +274,9 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
     # Try YuNet first, fall back to multi-cascade
     yunet = _load_yunet(fw_px, fh_px)
     if yunet is not None:
-        print("[smart_crop] Detector: YuNet (frontal + profile)", file=sys.stderr)
+        emit_status("[smart_crop] Detector: YuNet (frontal + profile)")
     else:
-        print("[smart_crop] Detector: Haar cascade (frontal + profile)", file=sys.stderr)
+        emit_status("[smart_crop] Detector: Haar cascade (frontal + profile)")
 
     cascade_front   = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     cascade_profile = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
@@ -285,6 +298,8 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
 
     cap = cv2.VideoCapture(video_path)
     idx = 0
+    progress_interval = max(1, total_frames // 55)  # ~55 updates in 0-55% range
+    emit_progress(0)
 
     while True:
         if idx % every == 0:
@@ -329,6 +344,8 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
 
         raw_cx.append(last_cx)
         idx += 1
+        if idx % progress_interval == 0:
+            emit_progress(min(55, int(idx / total_frames * 55)))
 
     cap.release()
 
@@ -378,7 +395,7 @@ def main():
 
     cap = cv2.VideoCapture(args.input)
     if not cap.isOpened():
-        print(f"Error: tidak dapat membuka video: {args.input}", file=sys.stderr)
+        os.write(1, (json.dumps({"error": f"tidak dapat membuka video: {args.input}"}) + "\n").encode("utf-8"))
         sys.exit(1)
 
     src_w  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -390,12 +407,13 @@ def main():
     crop_w = min(src_w, int(src_h * aw / ah)) & ~1
     crop_h = src_h & ~1
 
-    print(f"[smart_crop] {src_w}x{src_h} → {crop_w}x{crop_h} ({args.ratio})", file=sys.stderr)
-    print("[smart_crop] Mendeteksi posisi pembicara...", file=sys.stderr)
+    emit_status(f"[smart_crop] {src_w}x{src_h} → {crop_w}x{crop_h} ({args.ratio})")
+    emit_status("[smart_crop] Mendeteksi posisi pembicara...")
 
     crop_x_list = analyze_faces(args.input, crop_w, src_w, fps)
 
-    print(f"[smart_crop] Menerapkan crop ke {len(crop_x_list)} frame...", file=sys.stderr)
+    emit_status(f"[smart_crop] Menerapkan crop ke {len(crop_x_list)} frame...")
+    emit_progress(56)
 
     ffmpeg_cmd = [
         ffmpeg, "-y",
@@ -413,11 +431,13 @@ def main():
         args.output,
     ]
 
-    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     cap = cv2.VideoCapture(args.input)
     frame_idx = 0
     last_x = crop_x_list[-1] if crop_x_list else 0
+    total_render = len(crop_x_list) or 1
+    render_interval = max(1, total_render // 40)
 
     while True:
         ret, frame = cap.read()
@@ -432,6 +452,8 @@ def main():
         except BrokenPipeError:
             break
         frame_idx += 1
+        if frame_idx % render_interval == 0:
+            emit_progress(56 + min(43, int(frame_idx / total_render * 43)))
 
     cap.release()
     try:
@@ -439,12 +461,13 @@ def main():
     except Exception:
         pass
 
-    _, stderr_data = proc.communicate()
+    proc.wait()
     if proc.returncode != 0:
-        print(stderr_data.decode(errors="replace"), file=sys.stderr)
+        os.write(1, (json.dumps({"error": f"FFmpeg render gagal (exit {proc.returncode})"}) + "\n").encode("utf-8"))
         sys.exit(1)
 
-    print("[smart_crop] Selesai.", file=sys.stderr)
+    emit_progress(100)
+    emit_status("[smart_crop] Selesai.")
 
 
 if __name__ == "__main__":

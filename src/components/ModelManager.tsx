@@ -77,6 +77,7 @@ function WhisperTab() {
   const [models, setModels] = useState<WhisperModelInfo[]>([]);
   const [dlProgress, setDlProgress] = useState<Record<string, WhisperDownloadProgress>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [starting, setStarting] = useState<Set<string>>(new Set());
 
   async function refresh() {
     try {
@@ -90,6 +91,7 @@ function WhisperTab() {
     const unlistenPromise = listen<WhisperDownloadProgress>("whisper-download-progress", event => {
       const p = event.payload;
       setDlProgress(prev => ({ ...prev, [p.model_key]: p }));
+      setStarting(prev => { const n = new Set(prev); n.delete(p.model_key); return n; });
       if (p.done && !p.error) {
         setTimeout(refresh, 300);
         setDlProgress(prev => {
@@ -113,6 +115,7 @@ function WhisperTab() {
   async function handleDownload(m: WhisperModelInfo) {
     const key = `${m.id}-${m.backend}`;
     setErrors(prev => { const n = { ...prev }; delete n[key]; return n; });
+    setStarting(prev => { const n = new Set(prev); n.add(key); return n; });
     invoke("download_whisper_model", { modelId: m.id, backend: m.backend })
       .catch(e => {
         const msg = String(e);
@@ -120,6 +123,9 @@ function WhisperTab() {
           setErrors(prev => ({ ...prev, [key]: msg }));
         }
         setDlProgress(prev => { const n = { ...prev }; delete n[key]; return n; });
+      })
+      .finally(() => {
+        setStarting(prev => { const n = new Set(prev); n.delete(key); return n; });
       });
   }
 
@@ -150,6 +156,7 @@ function WhisperTab() {
           const key = `${m.id}-${m.backend}`;
           const dl = dlProgress[key];
           const isActive = !!dl;
+          const isStarting = starting.has(key);
           const err = errors[key];
 
           return (
@@ -178,6 +185,10 @@ function WhisperTab() {
                     </button>
                   </div>
                 </div>
+              ) : isStarting ? (
+                <button className="mm-btn mm-btn-download" disabled style={{ opacity: 0.6, cursor: "default" }}>
+                  ⏳ Memulai download...
+                </button>
               ) : m.cached ? (
                 <div className="mm-actions">
                   <button className="mm-btn mm-btn-delete" onClick={() => handleDelete(m)}>

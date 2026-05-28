@@ -64,18 +64,33 @@ def find_font(size, preferred_path=None):
                 continue
     return ImageFont.load_default()
 
+def emit_progress(pct: int) -> None:
+    try:
+        os.write(2, f"PROGRESS:{min(100, max(0, pct))}\n".encode("ascii"))
+    except OSError:
+        pass
+
 def get_video_info(path):
     result = subprocess.run(
         [FFPROBE, "-v", "quiet", "-print_format", "json",
-         "-show_streams", "-select_streams", "v:0", path],
+         "-show_streams", "-show_format", "-select_streams", "v:0", path],
         capture_output=True, text=True
     )
-    stream = json.loads(result.stdout)["streams"][0]
+    data = json.loads(result.stdout)
+    stream = data["streams"][0]
     w = stream["width"]
     h = stream["height"]
     num, den = map(int, stream["r_frame_rate"].split("/"))
     fps = num / den
-    return w, h, fps
+    try:
+        duration = float(stream["duration"])
+    except (KeyError, ValueError):
+        try:
+            duration = float(data.get("format", {}).get("duration") or 0)
+        except (ValueError, TypeError):
+            duration = 0.0
+    total_frames = int(duration * fps) if duration > 0 else 0
+    return w, h, fps, total_frames
 
 def get_text_at(t, entries):
     for entry in entries:
@@ -199,11 +214,13 @@ def draw_subtitle(img, text, font, line_h, style):
 def burn(input_path, entries, output_path, font_size=0, font_path=None, style=None):
     if style is None:
         style = {}
-    w, h, fps = get_video_info(input_path)
+    w, h, fps, total_frames = get_video_info(input_path)
     actual_size = font_size if font_size > 0 else max(26, h // 22)
     font   = find_font(actual_size, font_path)
     line_h = actual_size + 8
     frame_bytes = w * h * 3
+    # Emit roughly one progress update per percent (min every 10 frames)
+    progress_interval = max(10, total_frames // 100) if total_frames > 0 else 30
 
     decode = subprocess.Popen(
         [FFMPEG, "-i", input_path, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
@@ -221,6 +238,7 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
     )
 
     frame_num = 0
+    emit_progress(0)
     try:
         while True:
             chunk = decode.stdout.read(frame_bytes)
@@ -235,12 +253,16 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
             else:
                 encode.stdin.write(chunk)
             frame_num += 1
+            if frame_num % progress_interval == 0:
+                pct = min(99, int(frame_num / total_frames * 100)) if total_frames > 0 else 50
+                emit_progress(pct)
     finally:
         decode.stdout.close()
         decode.wait()
         encode.stdin.close()
         encode.wait()
 
+    emit_progress(100)
     return frame_num
 
 if __name__ == "__main__":
@@ -254,7 +276,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
-        print(json.dumps({"error": f"Input video tidak ditemukan: {args.input}"}))
+        os.write(1, (json.dumps({"error": f"Input video tidak ditemukan: {args.input}"}) + "\n").encode("utf-8"))
         sys.exit(1)
 
     with open(args.entries_json) as f:
@@ -265,10 +287,15 @@ if __name__ == "__main__":
     except Exception:
         style = {}
 
-    frames = burn(
-        args.input, entries, args.output,
-        font_size=args.font_size,
-        font_path=args.font if args.font else None,
-        style=style,
-    )
-    print(json.dumps({"success": True, "frames": frames}))
+    try:
+        frames = burn(
+            args.input, entries, args.output,
+            font_size=args.font_size,
+            font_path=args.font if args.font else None,
+            style=style,
+        )
+        os.write(1, (json.dumps({"success": True, "frames": frames}) + "\n").encode("utf-8"))
+    except Exception as e:
+        import traceback
+        os.write(1, (json.dumps({"error": str(e), "traceback": traceback.format_exc()}) + "\n").encode("utf-8"))
+        sys.exit(1)

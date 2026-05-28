@@ -189,7 +189,10 @@ def get_wav_duration(path: str) -> float:
 
 def emit_progress(pct: int) -> None:
     """Write a PROGRESS line to stderr — picked up by the Rust layer."""
-    print(f"PROGRESS:{min(100, max(0, pct))}", file=sys.stderr, flush=True)
+    try:
+        os.write(2, f"PROGRESS:{min(100, max(0, pct))}\n".encode("ascii"))
+    except OSError:
+        pass
 
 # ── MLX backend (Apple Silicon) ──────────────────────────────────────────────
 
@@ -403,7 +406,9 @@ if __name__ == "__main__":
 
     try:
         result = transcribe(video_path, model_dir, language, preset, max_words)
-        print(json.dumps(result, ensure_ascii=False))
+        os.write(1, (json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8"))
     except Exception as e:
-        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        import traceback
+        err_json = json.dumps({"error": str(e), "traceback": traceback.format_exc()})
+        os.write(1, (err_json + "\n").encode("utf-8"))
         sys.exit(1)

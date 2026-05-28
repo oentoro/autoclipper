@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openUrl } from "@tauri-apps/plugin-shell";
 import type { DepsStatus } from "../types";
 
 interface Props {
@@ -46,6 +47,15 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
                 title={dep.install_cmd}
               >
                 {isInstalling ? "Membuka terminal..." : "↓ Install"}
+              </button>
+            )}
+            {!dep.ok && dep.download_url && (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => openUrl(dep.download_url!)}
+                title={dep.download_url}
+              >
+                ↗ Download Manual
               </button>
             )}
           </div>
@@ -101,6 +111,15 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
                         title={dep.install_cmd}
                       >
                         {isInstalling ? "Membuka terminal..." : "↓ Install"}
+                      </button>
+                    )}
+                    {!dep.ok && dep.download_url && (
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => openUrl(dep.download_url!)}
+                        title={dep.download_url}
+                      >
+                        ↗ Download Manual
                       </button>
                     )}
                   </div>

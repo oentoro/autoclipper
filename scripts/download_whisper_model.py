@@ -39,7 +39,10 @@ SIZE_ESTIMATES = {
 }
 
 def emit_progress(pct: int) -> None:
-    print(f"PROGRESS:{min(100, max(0, pct))}", file=sys.stderr, flush=True)
+    try:
+        os.write(2, f"PROGRESS:{min(100, max(0, pct))}\n".encode("ascii"))
+    except OSError:
+        pass
 
 def blobs_size(cache_dir: str, repo_id: str) -> int:
     """Return total bytes in the blobs/ dir for this repo."""
@@ -116,7 +119,7 @@ if __name__ == "__main__":
                 raise ValueError(f"Unknown faster-whisper model: {model_id}")
 
         path = download_repo(repo, cache_dir, model_id)
-        print(json.dumps({"success": True, "path": path}))
+        os.write(1, (json.dumps({"success": True, "path": path}) + "\n").encode("utf-8"))
     except Exception as e:
-        print(json.dumps({"error": str(e)}))
+        os.write(1, (json.dumps({"error": str(e)}) + "\n").encode("utf-8"))
         sys.exit(1)

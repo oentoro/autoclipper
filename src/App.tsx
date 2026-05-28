@@ -299,6 +299,26 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setLoadingMsg(`Menggabungkan ${selectedIndices.size} segmen menjadi satu video...`);
     setError("");
 
+    const unlistenSmart = await listen<number>("clip-smart-percent", event => {
+      const pct = event.payload;
+      if (pct < 56) {
+        setLoadingMsg(`Mendeteksi wajah... ${Math.round(pct / 55 * 100)}%`);
+      } else if (pct < 100) {
+        setLoadingMsg(`Menerapkan smart crop... ${Math.round((pct - 56) / 43 * 100)}%`);
+      } else {
+        setLoadingMsg("Menyelesaikan video...");
+      }
+    });
+
+    const unlistenBurn = await listen<number>("clip-burn-percent", event => {
+      const pct = event.payload;
+      if (pct >= 100) {
+        setLoadingMsg("Menyelesaikan video...");
+      } else {
+        setLoadingMsg(`Membakar subtitle ke video... ${pct}%`);
+      }
+    });
+
     try {
       const result = await invoke<ClipResult>("clip_video", {
         videoPath,
@@ -318,6 +338,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       setError(String(e));
       setStep("transcript");
     } finally {
+      unlistenSmart();
+      unlistenBurn();
       setLoading(false);
       setLoadingMsg("");
     }
