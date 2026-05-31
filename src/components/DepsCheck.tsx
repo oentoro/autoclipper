@@ -11,6 +11,8 @@ interface Props {
 
 export default function DepsCheck({ status, onRetry, onContinue }: Props) {
   const [installing, setInstalling] = useState<Set<string>>(new Set());
+  const [venvCreating, setVenvCreating] = useState(false);
+  const [venvError, setVenvError] = useState<string | null>(null);
 
   async function handleInstall(name: string, installCmd: string) {
     setInstalling((prev) => new Set(prev).add(name));
@@ -27,19 +29,42 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
     }
   }
 
+  async function handleCreateVenv() {
+    setVenvCreating(true);
+    setVenvError(null);
+    try {
+      await invoke("create_venv");
+      onRetry(); // refresh deps status to show new venv path
+    } catch (e) {
+      setVenvError(String(e));
+    } finally {
+      setVenvCreating(false);
+    }
+  }
+
   const required = status.checks.filter((c) => !c.optional);
   const optional = status.checks.filter((c) => c.optional);
   const missingRequired = required.filter((c) => !c.ok);
 
   function renderDep(dep: DepsStatus["checks"][number]) {
     const isInstalling = installing.has(dep.name);
+    const isVenvAction = dep.install_cmd === "__create_venv__";
     return (
       <div key={dep.name} className={`dep-item ${dep.ok ? "ok" : "fail"}`}>
         <span className="dep-icon">{dep.ok ? "✓" : "✗"}</span>
         <div className="dep-info">
           <div className="dep-name-row">
             <span className="dep-name">{dep.name}</span>
-            {!dep.ok && dep.install_cmd && (
+            {!dep.ok && isVenvAction && (
+              <button
+                className="btn btn-install btn-sm"
+                onClick={handleCreateVenv}
+                disabled={venvCreating}
+              >
+                {venvCreating ? "Membuat environment..." : "+ Buat Environment"}
+              </button>
+            )}
+            {!dep.ok && dep.install_cmd && !isVenvAction && (
               <button
                 className="btn btn-install btn-sm"
                 onClick={() => handleInstall(dep.name, dep.install_cmd!)}
@@ -65,7 +90,10 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
           {!dep.ok && dep.error && (
             <span className="dep-error">{dep.error}</span>
           )}
-          {!dep.ok && dep.install_cmd && (
+          {venvError && isVenvAction && (
+            <span className="dep-error">{venvError}</span>
+          )}
+          {!dep.ok && dep.install_cmd && !isVenvAction && (
             <code className="dep-cmd">{dep.install_cmd}</code>
           )}
         </div>

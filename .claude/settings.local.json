@@ -36,7 +36,12 @@
       "PowerShell(py *)",
       "PowerShell(cd C:\\\\Users\\\\oentoro\\\\autoclipper && py scripts\\\\download_whisper_model.py --model tiny --backend faster-whisper --cache-dir \"$env:USERPROFILE\\\\.cache\\\\huggingface\\\\hub\" 2>&1 | Select-Object -First 20)",
       "PowerShell(Stop-Process *)",
-      "PowerShell(Get-ChildItem *)"
+      "PowerShell(Get-ChildItem *)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(kill 842)",
+      "Bash(VITE_PORT=1421 rtk npm run tauri dev)",
+      "Bash(kill 1361)",
+      "Bash(screencapture -x /tmp/autoclipper-screen.png)"
     ]
   }
 }

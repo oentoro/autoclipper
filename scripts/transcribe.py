@@ -122,6 +122,29 @@ def split_segment_by_words(seg, max_words: int) -> list[dict]:
             chunks.append({"text": chunk_text, "start": chunk[0].start, "end": chunk[-1].end})
     return chunks
 
+def _filter_hallucinations(segments: list, no_speech_threshold: float = 0.6) -> list:
+    """Drop silent/hallucinated segments from Whisper output.
+
+    Two passes:
+    1. no_speech_prob above threshold → segment is noise/silence, skip.
+    2. Text identical to previous kept segment → repetition hallucination, skip.
+    Works with both dict (MLX) and object (faster-whisper) segments.
+    """
+    filtered = []
+    prev_text = ""
+    for seg in segments:
+        nsp = seg.get("no_speech_prob") if isinstance(seg, dict) else getattr(seg, "no_speech_prob", 0.0)
+        if nsp is not None and nsp > no_speech_threshold:
+            continue
+        text = (seg.get("text") if isinstance(seg, dict) else getattr(seg, "text", "")).strip()
+        if text and text == prev_text:
+            continue
+        filtered.append(seg)
+        if text:
+            prev_text = text
+    return filtered
+
+
 def build_output(raw_chunks: list[dict]) -> tuple:
     segments = []
     srt_lines = []
@@ -256,7 +279,8 @@ def _transcribe_mlx(audio_path: str, model_name: str, language: str | None,
         raise result_box[1]
 
     r = result_box[0]
-    return r["segments"], r.get("language") or "unknown"
+    segs = _filter_hallucinations(r["segments"])
+    return segs, r.get("language") or "unknown"
 
 # ── faster-whisper backend (CUDA / CPU) ──────────────────────────────────────
 
@@ -311,6 +335,7 @@ def _transcribe_faster_whisper(audio_path: str, model_name: str, language: str |
         else:
             emit_progress(50)  # no duration info — show indeterminate midpoint
 
+    segments_out = _filter_hallucinations(segments_out)
     return segments_out, info.language or "unknown"
 
 # ─────────────────────────────────────────────────────────────────────────────

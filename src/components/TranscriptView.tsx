@@ -31,9 +31,12 @@ interface Props {
   onToggleSection: (sectionIdx: number) => void;
   onClip: () => void;
   onSaveSrt: () => void;
+  onSegmentEdit: (index: number, newText: string) => void;
   onBurnSubtitlesChange: (v: boolean) => void;
   onAspectRatioChange: (v: string) => void;
   onSmartCropChange: (v: boolean) => void;
+  smartCropTransition: "smooth" | "aggressive";
+  onSmartCropTransitionChange: (v: "smooth" | "aggressive") => void;
   subtitleFontSize: number;
   subtitleFont: string;
   systemFonts: FontInfo[];
@@ -84,9 +87,12 @@ export default function TranscriptView({
   onToggleSection,
   onClip,
   onSaveSrt,
+  onSegmentEdit,
   onBurnSubtitlesChange,
   onAspectRatioChange,
   onSmartCropChange,
+  smartCropTransition,
+  onSmartCropTransitionChange,
   subtitleFontSize,
   subtitleFont,
   systemFonts,
@@ -110,7 +116,56 @@ export default function TranscriptView({
   const [searchText, setSearchText] = useState("");
   const [showSrt, setShowSrt] = useState(false);
   const [previewReady, setPreviewReady] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState("");
   const fontStyleRef = useRef<HTMLStyleElement | null>(null);
+
+  function startEdit(seg: SrtSegment, e: React.MouseEvent) {
+    e.stopPropagation();
+    setEditingIndex(seg.index);
+    setEditingText(seg.text);
+  }
+
+  function saveEdit() {
+    if (editingIndex !== null) {
+      onSegmentEdit(editingIndex, editingText.trim() || editingText);
+      setEditingIndex(null);
+    }
+  }
+
+  function cancelEdit() {
+    setEditingIndex(null);
+  }
+
+  function renderSegmentText(seg: SrtSegment) {
+    if (editingIndex === seg.index) {
+      return (
+        <textarea
+          className="segment-text-edit"
+          value={editingText}
+          onChange={e => setEditingText(e.target.value)}
+          onBlur={saveEdit}
+          onKeyDown={e => {
+            e.stopPropagation();
+            if (e.key === "Escape") { cancelEdit(); }
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEdit(); }
+          }}
+          onClick={e => e.stopPropagation()}
+          autoFocus
+          rows={2}
+        />
+      );
+    }
+    return (
+      <p
+        className="segment-text"
+        onDoubleClick={e => startEdit(seg, e)}
+        title="Klik dua kali untuk edit teks"
+      >
+        {seg.text}
+      </p>
+    );
+  }
 
   // Clear search when sections first appear so the section-grouped view is shown
   useEffect(() => {
@@ -335,9 +390,29 @@ export default function TranscriptView({
               </span>
             </label>
             {smartCrop && (
-              <p className="smart-crop-note">
-                Deteksi wajah otomatis · proses lebih lama
-              </p>
+              <>
+                <div className="smart-crop-transition">
+                  {([
+                    { value: "smooth",     label: "Halus",   hint: "Kamera bergerak perlahan mengikuti wajah" },
+                    { value: "aggressive", label: "Agresif", hint: "Langsung snap ke wajah baru, seperti hard cut" },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.value}
+                      className={`transition-btn ${smartCropTransition === opt.value ? "active" : ""}`}
+                      onClick={() => onSmartCropTransitionChange(opt.value)}
+                      title={opt.hint}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="smart-crop-note">
+                  {smartCropTransition === "aggressive"
+                    ? "Snap langsung · cocok untuk talk show / debat"
+                    : "Pan sinematik · cocok untuk konten solo"
+                  }
+                </p>
+              </>
             )}
           </div>
         )}
@@ -582,7 +657,7 @@ export default function TranscriptView({
                           <span className="segment-time">{seg.start_time} → {seg.end_time}</span>
                           <span className="segment-duration">{(seg.end - seg.start).toFixed(1)}s</span>
                         </div>
-                        <p className="segment-text">{seg.text}</p>
+                        {renderSegmentText(seg)}
                       </div>
                     ))}
                   </div>

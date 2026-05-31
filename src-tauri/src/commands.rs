@@ -38,7 +38,9 @@ pub struct AnalyzeResult {
 pub struct Section {
     pub name: String,
     pub summary: String,
+    #[serde(default)]
     pub start_index: usize,
+    #[serde(default)]
     pub end_index: usize,
 }
 
@@ -112,6 +114,33 @@ pub struct WhisperDownloadState {
     pub pids:        Mutex<std::collections::HashMap<String, u32>>,
 }
 
+#[derive(Default)]
+pub struct ProcessCancelState {
+    pub transcribe_pid: Mutex<Option<u32>>,
+    pub clip_pid:       Mutex<Option<u32>>,
+}
+
+fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+    #[cfg(windows)]
+    { let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output(); }
+}
+
+#[tauri::command]
+pub fn cancel_transcription(state: tauri::State<'_, ProcessCancelState>) {
+    if let Ok(mut g) = state.transcribe_pid.lock() {
+        if let Some(pid) = g.take() { kill_pid(pid); }
+    }
+}
+
+#[tauri::command]
+pub fn cancel_clipping(state: tauri::State<'_, ProcessCancelState>) {
+    if let Ok(mut g) = state.clip_pid.lock() {
+        if let Some(pid) = g.take() { kill_pid(pid); }
+    }
+}
+
 pub struct LlamaServerState {
     process:      std::sync::Mutex<Option<std::process::Child>>,
     current_model: std::sync::Mutex<String>,
@@ -139,6 +168,35 @@ impl Drop for LlamaServerState {
     }
 }
 
+// ─── Virtual environment helpers ──────────────────────────────────────────────
+
+pub fn venv_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
+    #[cfg(not(target_os = "windows"))]
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".autoclipper").join("venv")
+}
+
+fn venv_python() -> Option<String> {
+    let venv = venv_dir();
+    #[cfg(target_os = "windows")]
+    let p = venv.join("Scripts").join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let p = venv.join("bin").join("python3");
+    if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
+}
+
+#[allow(dead_code)]
+fn venv_pip() -> Option<String> {
+    let venv = venv_dir();
+    #[cfg(target_os = "windows")]
+    let p = venv.join("Scripts").join("pip.exe");
+    #[cfg(not(target_os = "windows"))]
+    let p = venv.join("bin").join("pip");
+    if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
+}
+
 // ─── Platform helpers ─────────────────────────────────────────────────────────
 
 fn which(bin: &str) -> Option<String> {
@@ -164,6 +222,10 @@ fn vendor_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 // ─── Cross-platform path finders ─────────────────────────────────────────────
 
 fn find_python(vendor: Option<&Path>) -> String {
+    // Prefer managed venv — isolated, no PEP 668 issues, has all packages
+    if let Some(vp) = venv_python() {
+        return vp;
+    }
     if let Some(v) = vendor {
         #[cfg(target_os = "windows")]
         let p = v.join("python").join("python.exe");
@@ -768,6 +830,7 @@ fn build_retimed_entries(groups: &[ClipGroup]) -> Vec<serde_json::Value> {
 fn encode_one_group(
     ffmpeg: &str, video_path: &str, group: &ClipGroup,
     crop_filter: Option<&str>, dest: &str,
+    pid_cell: &Mutex<Option<u32>>,
 ) -> Result<(), String> {
     let ss  = format!("{:.6}", group.start_sec);
     let dur = format!("{:.6}", group.duration());
@@ -776,7 +839,7 @@ fn encode_one_group(
         "-y".to_string(),
         "-ss".to_string(), ss,
         "-i".to_string(),  video_path.to_string(),
-        "-t".to_string(),  dur,   // duration instead of -to: avoids rounding drift
+        "-t".to_string(),  dur,
     ];
     if let Some(crop) = crop_filter {
         args.extend(["-vf".to_string(), crop.to_string()]);
@@ -791,10 +854,14 @@ fn encode_one_group(
         dest.to_string(),
     ]);
 
-    let status = Command::new(ffmpeg)
+    let mut child = Command::new(ffmpeg)
         .args(&args)
-        .status()
+        .spawn()
         .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
+    *pid_cell.lock().unwrap() = Some(child.id());
+    let status = child.wait()
+        .map_err(|e| format!("Gagal menunggu FFmpeg: {e}"))?;
+    *pid_cell.lock().unwrap() = None;
 
     if status.success() { Ok(()) } else { Err("FFmpeg gagal mengekstrak klip.".to_string()) }
 }
@@ -805,9 +872,10 @@ fn encode_one_group(
 fn concat_groups(
     ffmpeg: &str, video_path: &str, groups: &[ClipGroup],
     crop_filter: Option<&str>, dest: &str,
+    pid_cell: &Mutex<Option<u32>>,
 ) -> Result<(), String> {
     if groups.len() == 1 {
-        return encode_one_group(ffmpeg, video_path, &groups[0], crop_filter, dest);
+        return encode_one_group(ffmpeg, video_path, &groups[0], crop_filter, dest, pid_cell);
     }
 
     let n = groups.len();
@@ -853,10 +921,14 @@ fn concat_groups(
         dest.to_string(),
     ]);
 
-    let status = Command::new(ffmpeg)
+    let mut child = Command::new(ffmpeg)
         .args(&args)
-        .status()
+        .spawn()
         .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
+    *pid_cell.lock().unwrap() = Some(child.id());
+    let status = child.wait()
+        .map_err(|e| format!("Gagal menunggu FFmpeg: {e}"))?;
+    *pid_cell.lock().unwrap() = None;
 
     if status.success() { Ok(()) } else { Err("FFmpeg gagal menggabungkan klip.".to_string()) }
 }
@@ -1046,23 +1118,57 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
 
     // Platform-specific install commands
     #[cfg(target_os = "macos")]
-    let (py_install, ff_install, pip) = ("brew install python", "brew install ffmpeg", "pip3");
+    let (py_install, ff_install) = ("brew install python", "brew install ffmpeg");
     #[cfg(target_os = "linux")]
-    let (py_install, ff_install, pip) = (
+    let (py_install, ff_install) = (
         "sudo apt install python3  # Ubuntu\nsudo dnf install python3  # Fedora",
         "sudo apt install ffmpeg   # Ubuntu\nsudo dnf install ffmpeg   # Fedora",
-        "pip3",
     );
     #[cfg(target_os = "windows")]
     let has_choco = which("choco").is_some();
     #[cfg(target_os = "windows")]
-    let (py_install, ff_install, pip) = if has_choco {
-        ("choco install python -y", "choco install ffmpeg -y", "pip")
+    let (py_install, ff_install) = if has_choco {
+        ("choco install python -y", "choco install ffmpeg -y")
     } else {
-        ("winget install Python.Python.3 -e --source winget", "winget install Gyan.FFmpeg -e --source winget", "pip")
+        ("winget install Python.Python.3 -e --source winget", "winget install Gyan.FFmpeg -e --source winget")
+    };
+
+    // Virtual environment — pip inside venv never has PEP 668 issues
+    let venv = venv_dir();
+    let venv_str = venv.to_string_lossy().to_string();
+    let venv_exists = venv_python().is_some();
+    #[cfg(target_os = "windows")]
+    let pip_in_venv = format!("{}\\Scripts\\pip.exe", venv_str);
+    #[cfg(not(target_os = "windows"))]
+    let pip_in_venv = format!("{}/bin/pip", venv_str);
+
+    // Helper: install a package. If venv is ready, use its pip directly.
+    // If not, prepend venv creation so the user gets both in one terminal run.
+    let pip_install = |pkg: &str| -> String {
+        if venv_exists {
+            format!("{pip_in_venv} install {pkg}")
+        } else {
+            #[cfg(not(target_os = "windows"))]
+            return format!("python3 -m venv \"{venv_str}\" && \"{pip_in_venv}\" install {pkg}");
+            #[cfg(target_os = "windows")]
+            return format!("python -m venv \"{venv_str}\" && \"{pip_in_venv}\" install {pkg}");
+        }
     };
 
     let mut checks: Vec<DepCheck> = Vec::new();
+
+    // Venv status — shown first so user knows to create it before installing packages
+    checks.push(DepCheck {
+        name: "Python Environment (venv)".to_string(),
+        ok: venv_exists,
+        path: if venv_exists { Some(venv_str.clone()) } else { None },
+        error: if !venv_exists {
+            Some(format!("Virtual environment belum dibuat. Klik 'Buat Environment' agar instalasi package tidak bertabrakan dengan Python sistem."))
+        } else { None },
+        install_cmd: if !venv_exists { Some("__create_venv__".to_string()) } else { None },
+        download_url: None,
+        optional: true,
+    });
 
     let python = find_python(v);
     let python_ok = Command::new(&python).arg("--version").output()
@@ -1076,6 +1182,19 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         download_url: if !python_ok { Some("https://www.python.org/downloads/".to_string()) } else { None },
         optional: false,
     });
+
+    // When venv exists, use `pip show` — reliable regardless of Python ABI/compat.
+    // When no venv, fall back to `python -c "import pkg"`.
+    let pkg_check = |import_name: &str, pip_name: &str| -> bool {
+        if venv_exists {
+            Command::new(&pip_in_venv).args(["show", pip_name]).output()
+                .map(|o| o.status.success()).unwrap_or(false)
+        } else {
+            python_ok && Command::new(&python)
+                .args(["-c", &format!("import {import_name}")])
+                .output().map(|o| o.status.success()).unwrap_or(false)
+        }
+    };
 
     let ffmpeg = find_ffmpeg(v);
     let ffmpeg_ok = Command::new(&ffmpeg).arg("-version").output()
@@ -1103,41 +1222,35 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         optional: false,
     });
 
-    let whisper_ok = python_ok && Command::new(&python)
-        .args(["-c", "import faster_whisper"])
-        .output().map(|o| o.status.success()).unwrap_or(false);
+    let whisper_ok = pkg_check("faster_whisper", "faster-whisper");
     checks.push(DepCheck {
         name: format!("faster-whisper ({source})"),
         ok: whisper_ok,
         path: None,
         error: if !whisper_ok { Some("Package faster-whisper belum terinstall".to_string()) } else { None },
-        install_cmd: if !whisper_ok { Some(format!("{pip} install faster-whisper")) } else { None },
+        install_cmd: if !whisper_ok { Some(pip_install("faster-whisper")) } else { None },
         download_url: None,
         optional: false,
     });
 
-    let hf_hub_ok = python_ok && Command::new(&python)
-        .args(["-c", "import huggingface_hub"])
-        .output().map(|o| o.status.success()).unwrap_or(false);
+    let hf_hub_ok = pkg_check("huggingface_hub", "huggingface-hub");
     checks.push(DepCheck {
         name: format!("huggingface-hub ({source})"),
         ok: hf_hub_ok,
         path: None,
         error: if !hf_hub_ok { Some("Package huggingface-hub belum terinstall — diperlukan untuk download model Whisper".to_string()) } else { None },
-        install_cmd: if !hf_hub_ok { Some(format!("{pip} install huggingface_hub")) } else { None },
+        install_cmd: if !hf_hub_ok { Some(pip_install("huggingface_hub")) } else { None },
         download_url: None,
         optional: false,
     });
 
-    let pillow_ok = python_ok && Command::new(&python)
-        .args(["-c", "import PIL"])
-        .output().map(|o| o.status.success()).unwrap_or(false);
+    let pillow_ok = pkg_check("PIL", "Pillow");
     checks.push(DepCheck {
         name: format!("Pillow ({source})"),
         ok: pillow_ok,
         path: None,
         error: if !pillow_ok { Some("Package Pillow belum terinstall".to_string()) } else { None },
-        install_cmd: if !pillow_ok { Some(format!("{pip} install Pillow")) } else { None },
+        install_cmd: if !pillow_ok { Some(pip_install("Pillow")) } else { None },
         download_url: None,
         optional: false,
     });
@@ -1172,15 +1285,26 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         optional: true,
     });
 
-    let opencv_ok = python_ok && Command::new(&python)
-        .args(["-c", "import cv2"])
-        .output().map(|o| o.status.success()).unwrap_or(false);
+    let opencv_ok = pkg_check("cv2", "opencv-python");
     checks.push(DepCheck {
         name: format!("opencv-python (Smart Crop)"),
         ok: opencv_ok,
         path: None,
         error: if !opencv_ok { Some("opencv-python belum terinstall — diperlukan untuk Smart Crop".to_string()) } else { None },
-        install_cmd: if !opencv_ok { Some(format!("{pip} install opencv-python")) } else { None },
+        install_cmd: if !opencv_ok { Some(pip_install("opencv-python")) } else { None },
+        download_url: None,
+        optional: true,
+    });
+
+    let mediapipe_ok = pkg_check("mediapipe", "mediapipe");
+    checks.push(DepCheck {
+        name: "mediapipe (Smart Crop presisi tinggi)".to_string(),
+        ok: mediapipe_ok,
+        path: None,
+        error: if !mediapipe_ok {
+            Some("mediapipe belum terinstall — Smart Crop akan pakai detektor cadangan (YuNet/Haar) yang kurang presisi".to_string())
+        } else { None },
+        install_cmd: if !mediapipe_ok { Some(pip_install("mediapipe")) } else { None },
         download_url: None,
         optional: true,
     });
@@ -1228,6 +1352,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
 #[tauri::command]
 pub async fn transcribe_video(
     app: tauri::AppHandle,
+    cancel: tauri::State<'_, ProcessCancelState>,
     video_path: String,
     source_language: String,
     preset: String,
@@ -1267,6 +1392,7 @@ pub async fn transcribe_video(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("Gagal menjalankan Whisper: {e}"))?;
+    if let Some(pid) = child.id() { *cancel.transcribe_pid.lock().unwrap() = Some(pid); }
 
     // Stream stderr: PROGRESS:N → "transcribe-percent" event, other lines → "transcribe-progress"
     if let Some(stderr) = child.stderr.take() {
@@ -1287,12 +1413,12 @@ pub async fn transcribe_video(
 
     let output = child.wait_with_output().await
         .map_err(|e| format!("Whisper process error: {e}"))?;
+    *cancel.transcribe_pid.lock().unwrap() = None;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() {
-        // Error JSON is written to stdout (stderr is consumed by progress reader)
         let err: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_default();
-        let error = err["error"].as_str().unwrap_or("Whisper gagal").to_string();
+        let error = err["error"].as_str().unwrap_or("Transkripsi dibatalkan").to_string();
         let tb = err["traceback"].as_str().unwrap_or("").trim().to_string();
         let msg = if tb.is_empty() { error } else { format!("{error}\n\n{tb}") };
         return Err(msg);
@@ -1380,6 +1506,20 @@ pub async fn classify_transcript(
     let mut result: ClassifyResult = serde_json::from_str(&content)
         .map_err(|e| format!("Gagal parse klasifikasi: {e}\nContent: {content}"))?;
 
+    // If the model omitted start_index/end_index (all defaulted to 0), distribute
+    // segments evenly across sections so the result is still useful.
+    let all_missing = result.sections.iter().all(|s| s.start_index == 0 && s.end_index == 0);
+    if all_missing && !result.sections.is_empty() {
+        let n = result.sections.len();
+        let step = (segments.len() + n - 1) / n; // ceiling div
+        for (i, sec) in result.sections.iter_mut().enumerate() {
+            let a = (i * step).min(segments.len() - 1);
+            let b = ((i + 1) * step).saturating_sub(1).min(segments.len() - 1);
+            sec.start_index = segments[a].index;
+            sec.end_index   = segments[b].index;
+        }
+    }
+
     for sec in &mut result.sections {
         sec.start_index = sec.start_index.max(first_idx);
         sec.end_index   = sec.end_index.min(last_idx).max(sec.start_index);
@@ -1401,13 +1541,15 @@ async fn exec_smart_crop(
     input: &str,
     output: &str,
     aspect_ratio: &str,
+    transition: &str,
+    pid_cell: &Mutex<Option<u32>>,
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command as TokioCommand;
 
     let script = find_script(app, "smart_crop.py");
     let mut cmd = TokioCommand::new(python);
-    cmd.args([&script, input, output, "--ratio", aspect_ratio])
+    cmd.args([&script, input, output, "--ratio", aspect_ratio, "--transition", transition])
         .env("AUTOCLIPPER_FFMPEG", ffmpeg)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -1416,6 +1558,7 @@ async fn exec_smart_crop(
 
     let mut child = cmd.spawn()
         .map_err(|e| format!("Gagal menjalankan smart_crop.py: {e}"))?;
+    if let Some(pid) = child.id() { *pid_cell.lock().unwrap() = Some(pid); }
 
     if let Some(stderr) = child.stderr.take() {
         let app_clone = app.clone();
@@ -1433,6 +1576,7 @@ async fn exec_smart_crop(
 
     let output_r = child.wait_with_output().await
         .map_err(|e| format!("Gagal menunggu smart_crop.py: {e}"))?;
+    *pid_cell.lock().unwrap() = None;
 
     if output_r.status.success() {
         Ok(())
@@ -1458,6 +1602,7 @@ async fn exec_burn_subs(
     font_size: u32,
     font_path: &str,
     subtitle_style_json: &str,
+    pid_cell: &Mutex<Option<u32>>,
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command as TokioCommand;
@@ -1493,6 +1638,7 @@ async fn exec_burn_subs(
 
     let mut child = cmd.spawn()
         .map_err(|e| format!("Gagal menjalankan burn_subtitles.py: {e}"))?;
+    if let Some(pid) = child.id() { *pid_cell.lock().unwrap() = Some(pid); }
 
     if let Some(stderr) = child.stderr.take() {
         let app_clone = app.clone();
@@ -1510,6 +1656,7 @@ async fn exec_burn_subs(
 
     let output = child.wait_with_output().await
         .map_err(|e| format!("Gagal menunggu burn_subtitles.py: {e}"))?;
+    *pid_cell.lock().unwrap() = None;
     let _ = std::fs::remove_file(&entries_path);
 
     if output.status.success() {
@@ -1528,6 +1675,7 @@ async fn exec_burn_subs(
 #[tauri::command]
 pub async fn clip_video(
     app: tauri::AppHandle,
+    cancel: tauri::State<'_, ProcessCancelState>,
     video_path: String,
     segments: Vec<SrtSegment>,
     selected_indices: Vec<usize>,
@@ -1535,6 +1683,7 @@ pub async fn clip_video(
     burn_subtitles: bool,
     aspect_ratio: String,
     smart_crop: bool,
+    smart_crop_transition: String,
     font_size: u32,
     font_path: String,
     subtitle_style_json: String,
@@ -1566,18 +1715,20 @@ pub async fn clip_video(
 
 
 
+    let pid_cell = &cancel.clip_pid;
+
     match (burn_subtitles, needs_smart) {
         // ── Case 1: no burn, no smart crop ────────────────────────────────
         (false, false) => {
-            concat_groups(&ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), &output_path)?;
+            concat_groups(&ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), &output_path, pid_cell)?;
         }
 
         // ── Case 2: burn only, no smart crop ──────────────────────────────
         (true, false) => {
             let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
-            concat_groups(&ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), tmp.to_str().unwrap())?;
+            concat_groups(&ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), tmp.to_str().unwrap(), pid_cell)?;
             let entries = build_retimed_entries(&groups);
-            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json).await;
+            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, pid_cell).await;
             let _ = std::fs::remove_file(&tmp);
             r?;
         }
@@ -1585,8 +1736,8 @@ pub async fn clip_video(
         // ── Case 3: smart crop only, no burn ──────────────────────────────
         (false, true) => {
             let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
-            concat_groups(&ffmpeg, &video_path, &groups, None, tmp.to_str().unwrap())?;
-            let r = exec_smart_crop(&app, &python, &ffmpeg, tmp.to_str().unwrap(), &output_path, &aspect_ratio).await;
+            concat_groups(&ffmpeg, &video_path, &groups, None, tmp.to_str().unwrap(), pid_cell)?;
+            let r = exec_smart_crop(&app, &python, &ffmpeg, tmp.to_str().unwrap(), &output_path, &aspect_ratio, &smart_crop_transition, pid_cell).await;
             let _ = std::fs::remove_file(&tmp);
             r?;
         }
@@ -1595,16 +1746,17 @@ pub async fn clip_video(
         (true, true) => {
             let tmp_concat = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
             let tmp_smart  = std::env::temp_dir().join("autoclipper_smart_tmp.mp4");
-            concat_groups(&ffmpeg, &video_path, &groups, None, tmp_concat.to_str().unwrap())?;
-            let r = exec_smart_crop(&app, &python, &ffmpeg, tmp_concat.to_str().unwrap(), tmp_smart.to_str().unwrap(), &aspect_ratio).await;
+            concat_groups(&ffmpeg, &video_path, &groups, None, tmp_concat.to_str().unwrap(), pid_cell)?;
+            let r = exec_smart_crop(&app, &python, &ffmpeg, tmp_concat.to_str().unwrap(), tmp_smart.to_str().unwrap(), &aspect_ratio, &smart_crop_transition, pid_cell).await;
             let _ = std::fs::remove_file(&tmp_concat);
             r?;
             let entries = build_retimed_entries(&groups);
-            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp_smart.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json).await;
+            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp_smart.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, pid_cell).await;
             let _ = std::fs::remove_file(&tmp_smart);
             r?;
         }
     }
+    *pid_cell.lock().unwrap() = None;
 
     let ar_note = if aspect_ratio != "original" {
         if needs_smart { format!(" [{aspect_ratio} smart]") } else { format!(" [{aspect_ratio}]") }
@@ -1820,6 +1972,47 @@ pub async fn reveal_in_file_manager(path: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn create_venv() -> Result<String, String> {
+    let venv = venv_dir();
+    let venv_str = venv.to_string_lossy().to_string();
+
+    // Use system Python (not venv — we're creating it)
+    #[cfg(target_os = "macos")]
+    let candidates = ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"];
+    #[cfg(target_os = "linux")]
+    let candidates = ["/usr/bin/python3", "/usr/local/bin/python3", ""];
+    #[cfg(target_os = "windows")]
+    let candidates = ["python", "py", ""];
+
+    let python = candidates.iter()
+        .filter(|p| !p.is_empty())
+        .find(|p| {
+            #[cfg(not(target_os = "windows"))]
+            { std::path::Path::new(p).exists() }
+            #[cfg(target_os = "windows")]
+            { which(p).is_some() }
+        })
+        .map(|s| s.to_string())
+        .or_else(|| which("python3"))
+        .unwrap_or_else(|| "python3".to_string());
+
+    std::fs::create_dir_all(venv.parent().unwrap_or(&venv))
+        .map_err(|e| format!("Gagal membuat direktori: {e}"))?;
+
+    let output = Command::new(&python)
+        .args(["-m", "venv", &venv_str])
+        .output()
+        .map_err(|e| format!("Gagal membuat virtual environment: {e}"))?;
+
+    if output.status.success() {
+        Ok(venv_str)
+    } else {
+        let err = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Gagal membuat virtual environment: {err}"))
+    }
 }
 
 #[tauri::command]

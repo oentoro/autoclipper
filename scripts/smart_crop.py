@@ -3,12 +3,14 @@
 Smart vertical crop — tracks the speaker's face horizontally.
 
 Detection strategy (in order of preference):
-  1. YuNet (cv2.FaceDetectorYN) — handles frontal, 3/4 profile, and full
-     profile (0°–90°).  Model is ~340 KB and auto-downloaded once to
-     ~/.cache/autoclipper/ on first run.
-  2. Multi-cascade fallback — haarcascade_frontalface_default.xml +
-     haarcascade_profileface.xml (applied twice: original + horizontally
-     flipped).  Bundled with opencv-python; no download needed.
+  1. MediaPipe Face Detection — deep-learning model, lowest false-positive
+     rate, no separate download required (bundled with the mediapipe package).
+     Pip: pip install mediapipe
+  2. YuNet (cv2.FaceDetectorYN) — handles frontal + profile (0°–90°).
+     Model ~340 KB, auto-downloaded once to ~/.cache/autoclipper/.
+  3. Multi-cascade fallback — haarcascade frontal + profile (both directions).
+     Bundled with opencv-python; no download needed but highest false-positive
+     rate — last resort only.
 
 Speaker selection (when multiple faces are visible):
   - Mouth-motion scoring via inter-frame pixel diff on the mouth region.
@@ -44,6 +46,76 @@ def emit_status(msg: str) -> None:
         os.write(2, (msg + "\n").encode("utf-8", errors="replace"))
     except OSError:
         pass
+
+
+# ── MediaPipe face detection ──────────────────────────────────────────────────
+
+def _load_mediapipe():
+    """
+    Return an initialised MediaPipe FaceDetection object, or None if the
+    package is not installed.  model_selection=1 covers distances > 2 m
+    (better for most video content than the short-range model 0).
+    """
+    try:
+        import mediapipe as mp
+        detector = mp.solutions.face_detection.FaceDetection(
+            model_selection=1,
+            min_detection_confidence=0.5,
+        )
+        return detector
+    except Exception:
+        return None
+
+
+def _detect_mediapipe(frame, detector) -> list[dict]:
+    """
+    Detect faces with MediaPipe and return the same dict format as the other
+    detectors: {cx, bbox:(x,y,w,h), mouth:(x,y,w,h), score}.
+
+    MediaPipe keypoints (FaceDetection short/full-range):
+      0 right_eye  1 left_eye  2 nose_tip  3 mouth_center
+      4 right_ear_tragion  5 left_ear_tragion
+    """
+    import mediapipe as mp
+    h, w = frame.shape[:2]
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = detector.process(rgb)
+    if not results or not results.detections:
+        return []
+
+    faces = []
+    for det in results.detections:
+        box = det.location_data.relative_bounding_box
+        bx = max(0, int(box.xmin * w))
+        by = max(0, int(box.ymin * h))
+        bw = max(1, int(box.width  * w))
+        bh = max(1, int(box.height * h))
+
+        kp = det.location_data.relative_keypoints
+        # Use nose tip as focal x (index 2) — accurate even for slight profiles
+        nose_x = int(kp[2].x * w) if len(kp) > 2 else bx + bw // 2
+        # Mouth region centred on mouth keypoint (index 3)
+        if len(kp) > 3:
+            m_cx = int(kp[3].x * w)
+            m_cy = int(kp[3].y * h)
+        else:
+            m_cx = bx + bw // 2
+            m_cy = by + int(bh * 0.75)
+        m_half_w = max(8, bw // 3)
+        m_half_h = max(6, bh // 8)
+        mx = max(0, m_cx - m_half_w)
+        my = max(0, m_cy - m_half_h)
+
+        score = det.score[0] if det.score else 1.0
+        cx = nose_x if 0 < nose_x < w else bx + bw // 2
+
+        faces.append({
+            "cx":    cx,
+            "bbox":  (bx, by, bw, bh),
+            "mouth": (mx, my, m_half_w * 2, m_half_h * 2),
+            "score": score,
+        })
+    return faces
 
 
 # ── YuNet model management ────────────────────────────────────────────────────
@@ -258,10 +330,14 @@ def pick_speaker_cx(faces: list[dict], gray_curr, gray_prev) -> int | None:
 
 # ── Analysis pass ─────────────────────────────────────────────────────────────
 
-def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[int]:
+def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float,
+                  transition: str = "smooth") -> list[int]:
     """
     Sample frames to detect face positions.
     Returns a list of smoothed crop_x values (one per actual video frame).
+
+    transition="smooth"     — slow cinematic pan; holds lock for ~2.5 s.
+    transition="aggressive" — snaps instantly; switches face after ~0.5 s.
     """
     # Open once to read a test frame for YuNet input-size init
     cap_tmp = cv2.VideoCapture(video_path)
@@ -271,22 +347,31 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
     fh_px = test_frame.shape[0] if ret else 720
     fw_px = test_frame.shape[1] if ret else 1280
 
-    # Try YuNet first, fall back to multi-cascade
-    yunet = _load_yunet(fw_px, fh_px)
-    if yunet is not None:
-        emit_status("[smart_crop] Detector: YuNet (frontal + profile)")
+    # Detector priority: MediaPipe > YuNet > Haar cascade
+    mp_detector = _load_mediapipe()
+    yunet = None
+    if mp_detector is not None:
+        emit_status("[smart_crop] Detector: MediaPipe (deep learning, presisi tinggi)")
     else:
-        emit_status("[smart_crop] Detector: Haar cascade (frontal + profile)")
+        yunet = _load_yunet(fw_px, fh_px)
+        if yunet is not None:
+            emit_status("[smart_crop] Detector: YuNet (frontal + profile)")
+        else:
+            emit_status("[smart_crop] Detector: Haar cascade (fallback) — install mediapipe untuk presisi lebih baik")
 
     cascade_front   = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     cascade_profile = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
 
     every = max(1, int(fps / 4))   # sample ~4 fps
     sample_fps = fps / every
-    # Minimum sampled frames before allowing a face switch (~2.5 s at ~4 fps sampling)
-    min_lock_samples = max(8, int(round(sample_fps * 2.5)))
-    # cx must differ by >20% of frame width to be treated as a different face
-    switch_dist = src_w * 0.20
+    if transition == "aggressive":
+        # Switch face after ~0.5 s; respond to smaller positional shifts (15 %)
+        min_lock_samples = max(2, int(round(sample_fps * 0.5)))
+        switch_dist = src_w * 0.15
+    else:
+        # Smooth: hold lock for ~2.5 s; only switch on large positional shift (20 %)
+        min_lock_samples = max(8, int(round(sample_fps * 2.5)))
+        switch_dist = src_w * 0.20
 
     default_cx = src_w // 2
     last_cx    = default_cx
@@ -308,7 +393,9 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
                 break
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            if yunet is not None:
+            if mp_detector is not None:
+                faces = _detect_mediapipe(frame, mp_detector)
+            elif yunet is not None:
                 faces = _detect_yunet(frame, yunet)
             else:
                 faces = _detect_cascade(gray, cascade_front, cascade_profile)
@@ -348,12 +435,17 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
             emit_progress(min(55, int(idx / total_frames * 55)))
 
     cap.release()
+    if mp_detector is not None:
+        try:
+            mp_detector.close()
+        except Exception:
+            pass
 
     if not raw_cx:
         return [max(0, default_cx - crop_w // 2)]
 
     arr = np.array(raw_cx, dtype=float)
-    smoothed = _smooth_adaptive(arr, fps, src_w)
+    smoothed = _smooth_adaptive(arr, fps, src_w, mode=transition)
     min_cx = crop_w // 2
     max_cx = src_w - crop_w // 2
     return [int(np.clip(cx, min_cx, max_cx)) - crop_w // 2 for cx in smoothed]
@@ -361,21 +453,33 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float) -> list[
 
 # ── EMA smoothing ─────────────────────────────────────────────────────────────
 
-def _smooth_adaptive(arr: np.ndarray, fps: float, src_w: int) -> np.ndarray:
+def _smooth_adaptive(arr: np.ndarray, fps: float, src_w: int,
+                     mode: str = "smooth") -> np.ndarray:
     """
-    EMA with two time constants:
-    - Slow (1.5 s): smooth cinematic tracking for normal movement.
-    - Fast (0.7 s): follows large speaker cuts (>25% frame width jump).
-    Raising both constants from the original 0.5 s / 0.08 s makes the
-    crop pan feel gradual rather than snapping.
+    EMA with two time constants, selected by mode:
+
+    smooth     — cinematic pan. Slow constant (1.5 s) for normal movement,
+                 fast constant (0.7 s) kicks in only for large jumps (>25 %).
+                 The camera glides between positions.
+
+    aggressive — hard cut on large jumps (alpha=1, instant), very light
+                 smoothing (0.1 s) for micro-jitter within the same face.
+                 Threshold is 10 % so even medium re-frames snap immediately.
     """
     if len(arr) == 0:
         return arr
-    result = np.empty_like(arr)
+    result = np.empty_like(arr, dtype=float)
     result[0] = arr[0]
-    alpha_slow = 1.0 - np.exp(-1.0 / max(1.0, fps * 1.5))
-    alpha_fast = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.7))
-    threshold = src_w * 0.25
+
+    if mode == "aggressive":
+        alpha_slow = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.1))  # 0.1 s — micro-jitter only
+        alpha_fast = 1.0                                          # instant snap
+        threshold  = src_w * 0.10                                 # 10 % triggers snap
+    else:  # smooth
+        alpha_slow = 1.0 - np.exp(-1.0 / max(1.0, fps * 1.5))
+        alpha_fast = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.7))
+        threshold  = src_w * 0.25
+
     for i in range(1, len(arr)):
         alpha = alpha_fast if abs(arr[i] - result[i - 1]) > threshold else alpha_slow
         result[i] = alpha * arr[i] + (1.0 - alpha) * result[i - 1]
@@ -388,7 +492,10 @@ def main():
     parser = argparse.ArgumentParser(description="Smart face-tracking crop")
     parser.add_argument("input",   help="Input video path")
     parser.add_argument("output",  help="Output video path")
-    parser.add_argument("--ratio", default="9:16", help="Target aspect ratio (e.g. 9:16)")
+    parser.add_argument("--ratio",      default="9:16",   help="Target aspect ratio (e.g. 9:16)")
+    parser.add_argument("--transition", default="smooth",
+                        choices=["smooth", "aggressive"],
+                        help="smooth = cinematic pan; aggressive = instant snap")
     args = parser.parse_args()
 
     ffmpeg = os.environ.get("AUTOCLIPPER_FFMPEG", "ffmpeg")
@@ -410,7 +517,7 @@ def main():
     emit_status(f"[smart_crop] {src_w}x{src_h} → {crop_w}x{crop_h} ({args.ratio})")
     emit_status("[smart_crop] Mendeteksi posisi pembicara...")
 
-    crop_x_list = analyze_faces(args.input, crop_w, src_w, fps)
+    crop_x_list = analyze_faces(args.input, crop_w, src_w, fps, transition=args.transition)
 
     emit_status(f"[smart_crop] Menerapkan crop ke {len(crop_x_list)} frame...")
     emit_progress(56)

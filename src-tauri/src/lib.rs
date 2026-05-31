@@ -11,6 +11,7 @@ pub fn run() {
         .manage(commands::DownloadState::default())
         .manage(commands::LlamaServerState::default())
         .manage(commands::WhisperDownloadState::default())
+        .manage(commands::ProcessCancelState::default())
         .invoke_handler(tauri::generate_handler![
             check_dependencies,
             get_system_fonts,
@@ -29,6 +30,9 @@ pub fn run() {
             get_video_duration,
             reveal_in_file_manager,
             install_dependency,
+            create_venv,
+            cancel_transcription,
+            cancel_clipping,
             check_license,
             activate_license,
             deactivate_license,

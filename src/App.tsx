@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import VideoUpload from "./components/VideoUpload";
@@ -113,6 +113,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [burnSubtitles, setBurnSubtitles] = useState<boolean>(true);
   const [aspectRatio, setAspectRatio] = useState<string>("original");
   const [smartCrop, setSmartCrop] = useState<boolean>(false);
+  const [smartCropTransition, setSmartCropTransition] = useState<"smooth" | "aggressive">("smooth");
   const [subtitleFontSize, setSubtitleFontSize] = useState<number>(0);
   const [subtitleFont, setSubtitleFont] = useState<string>("");
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
@@ -132,6 +133,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [transcribeDuration, setTranscribeDuration] = useState<number>(0);
   const transcribeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcribeStartRef = useRef<number>(0);
+  const [cancelling, setCancelling] = useState(false);
+  const cancellingRef = useRef(false);
 
   function handleVideoSelect(path: string) {
     setVideoPath(path);
@@ -145,7 +148,19 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setStep("ready");
   }
 
+  async function handleCancel() {
+    cancellingRef.current = true;
+    setCancelling(true);
+    if (step === "transcribing") {
+      await invoke("cancel_transcription").catch(() => {});
+    } else if (step === "clipping") {
+      await invoke("cancel_clipping").catch(() => {});
+    }
+  }
+
   async function startTranscription() {
+    cancellingRef.current = false;
+    setCancelling(false);
     setStep("transcribing");
     setLoading(true);
     setLoadingMsg("Mempersiapkan transkripsi...");
@@ -179,7 +194,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       setStep("transcript");
     } catch (e) {
       unlistenProgress();
-      setError(String(e));
+      if (!cancellingRef.current) setError(String(e));
       setStep("ready");
     } finally {
       const elapsed = Math.round((Date.now() - transcribeStartRef.current) / 1000);
@@ -191,6 +206,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       setLoading(false);
       setLoadingMsg("");
       setTranscribeElapsed(0);
+      setCancelling(false);
+      cancellingRef.current = false;
     }
   }
 
@@ -294,6 +311,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
 
     if (!outputPath) return;
 
+    cancellingRef.current = false;
+    setCancelling(false);
     setStep("clipping");
     setLoading(true);
     setLoadingMsg(`Menggabungkan ${selectedIndices.size} segmen menjadi satu video...`);
@@ -328,6 +347,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         burnSubtitles,
         aspectRatio,
         smartCrop,
+        smartCropTransition,
         fontSize: subtitleFontSize,
         fontPath: subtitleFont,
         subtitleStyleJson: JSON.stringify(subtitleStyle),
@@ -335,13 +355,15 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       setClipResult(result);
       setStep("done");
     } catch (e) {
-      setError(String(e));
+      if (!cancellingRef.current) setError(String(e));
       setStep("transcript");
     } finally {
       unlistenSmart();
       unlistenBurn();
       setLoading(false);
       setLoadingMsg("");
+      setCancelling(false);
+      cancellingRef.current = false;
     }
   }
 
@@ -354,6 +376,16 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       const { writeTextFile } = await import("@tauri-apps/plugin-fs");
       await writeTextFile(path, srtContent);
     }
+  }
+
+  function handleSegmentEdit(index: number, newText: string) {
+    const updated = segments.map(s =>
+      s.index === index ? { ...s, text: newText } : s
+    );
+    setSegments(updated);
+    setSrtContent(
+      updated.map(s => `${s.index}\n${s.start_time} --> ${s.end_time}\n${s.text}\n`).join("\n")
+    );
   }
 
   function handleReset() {
@@ -463,6 +495,11 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
                   {String(Math.floor(transcribeElapsed / 60)).padStart(2, "0")}:{String(transcribeElapsed % 60).padStart(2, "0")}
                 </div>
               )}
+              {(step === "transcribing" || step === "clipping") && (
+                cancelling
+                  ? <p className="cancel-hint">Membatalkan...</p>
+                  : <button className="btn btn-cancel" onClick={handleCancel}>✕ Batalkan</button>
+              )}
             </div>
           </div>
         )}
@@ -472,80 +509,94 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         )}
 
         {step === "ready" && (
-          <div className="ready-panel">
-            <div className="ready-video-row">
-              <span className="ready-video-icon">🎬</span>
-              <span className="ready-video-name" title={videoPath}>
+          <div className="ready-layout">
+            <div className="ready-preview">
+              <video
+                key={videoPath}
+                src={convertFileSrc(videoPath)}
+                controls
+                className="ready-video-player"
+              />
+              <p className="ready-preview-name" title={videoPath}>
                 {videoPath.split("/").pop()}
-              </span>
-              <button className="btn btn-ghost btn-sm" onClick={() => setStep("upload")}>
-                Ganti
+              </p>
+            </div>
+
+            <div className="ready-panel">
+              <div className="ready-video-row">
+                <span className="ready-video-icon">🎬</span>
+                <span className="ready-video-name" title={videoPath}>
+                  {videoPath.split("/").pop()}
+                </span>
+                <button className="btn btn-ghost btn-sm" onClick={() => setStep("upload")}>
+                  Ganti
+                </button>
+              </div>
+
+              <div className="ready-options">
+                <div className="ready-lang-row">
+                  <label className="ready-lang-label">Bahasa sumber</label>
+                  <select
+                    className="ready-lang-select"
+                    value={sourceLanguage}
+                    onChange={(e) => setSourceLanguage(e.target.value)}
+                  >
+                    {WHISPER_LANGS.map((l) => (
+                      <option key={l.code} value={l.code}>{l.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="ready-lang-row">
+                  <label className="ready-lang-label">Kecepatan</label>
+                  <div className="preset-group">
+                    {([
+                      { value: "fast",     label: "Cepat",    hint: "Model tiny — tercepat, akurasi rendah" },
+                      { value: "balanced", label: "Seimbang", hint: "Model base — kecepatan & akurasi seimbang (rekomendasi)" },
+                      { value: "accurate", label: "Akurat",   hint: "Model medium (1.5GB) — akurasi tinggi" },
+                      { value: "best",     label: "Terbaik",  hint: "Model large-v3-turbo (1.6GB) — akurasi terbaik, cocok untuk bahasa campuran" },
+                    ] as const).map(p => (
+                      <button
+                        key={p.value}
+                        className={`preset-btn ${transcribePreset === p.value ? "active" : ""}`}
+                        onClick={() => setTranscribePreset(p.value)}
+                        title={p.hint}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="ready-lang-row">
+                  <label className="ready-lang-label">Kata per subtitle</label>
+                  <div className="preset-group">
+                    {([
+                      { value: 0, label: "Auto",   hint: "Ikuti segmen asli Whisper" },
+                      { value: 2, label: "2 kata",  hint: "Maks 2 kata per subtitle — sangat cepat" },
+                      { value: 3, label: "3 kata",  hint: "Maks 3 kata per subtitle — rekomendasi untuk Reels/Shorts" },
+                      { value: 5, label: "5 kata",  hint: "Maks 5 kata per subtitle" },
+                    ] as const).map(p => (
+                      <button
+                        key={p.value}
+                        className={`preset-btn ${maxWordsPerSub === p.value ? "active" : ""}`}
+                        onClick={() => setMaxWordsPerSub(p.value)}
+                        title={p.hint}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                className="btn btn-primary ready-generate-btn"
+                onClick={startTranscription}
+              >
+                🎙 Generate Transkrip
               </button>
             </div>
-
-            <div className="ready-options">
-              <div className="ready-lang-row">
-                <label className="ready-lang-label">Bahasa sumber</label>
-                <select
-                  className="ready-lang-select"
-                  value={sourceLanguage}
-                  onChange={(e) => setSourceLanguage(e.target.value)}
-                >
-                  {WHISPER_LANGS.map((l) => (
-                    <option key={l.code} value={l.code}>{l.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="ready-lang-row">
-                <label className="ready-lang-label">Kecepatan</label>
-                <div className="preset-group">
-                  {([
-                    { value: "fast",     label: "Cepat",    hint: "Model tiny — tercepat, akurasi rendah" },
-                    { value: "balanced", label: "Seimbang", hint: "Model base — kecepatan & akurasi seimbang (rekomendasi)" },
-                    { value: "accurate", label: "Akurat",   hint: "Model medium (1.5GB) — akurasi tinggi" },
-                    { value: "best",     label: "Terbaik",  hint: "Model large-v3-turbo (1.6GB) — akurasi terbaik, cocok untuk bahasa campuran" },
-                  ] as const).map(p => (
-                    <button
-                      key={p.value}
-                      className={`preset-btn ${transcribePreset === p.value ? "active" : ""}`}
-                      onClick={() => setTranscribePreset(p.value)}
-                      title={p.hint}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="ready-lang-row">
-                <label className="ready-lang-label">Kata per subtitle</label>
-                <div className="preset-group">
-                  {([
-                    { value: 0, label: "Auto",   hint: "Ikuti segmen asli Whisper" },
-                    { value: 2, label: "2 kata",  hint: "Maks 2 kata per subtitle — sangat cepat" },
-                    { value: 3, label: "3 kata",  hint: "Maks 3 kata per subtitle — rekomendasi untuk Reels/Shorts" },
-                    { value: 5, label: "5 kata",  hint: "Maks 5 kata per subtitle" },
-                  ] as const).map(p => (
-                    <button
-                      key={p.value}
-                      className={`preset-btn ${maxWordsPerSub === p.value ? "active" : ""}`}
-                      onClick={() => setMaxWordsPerSub(p.value)}
-                      title={p.hint}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <button
-              className="btn btn-primary ready-generate-btn"
-              onClick={startTranscription}
-            >
-              🎙 Generate Transkrip
-            </button>
           </div>
         )}
 
@@ -564,10 +615,13 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             onToggleSection={toggleSection}
             onClip={handleClip}
             onSaveSrt={handleSaveSrt}
+            onSegmentEdit={handleSegmentEdit}
             onBurnSubtitlesChange={setBurnSubtitles}
             onAspectRatioChange={(v) => { setAspectRatio(v); if (v === "original") setSmartCrop(false); }}
             smartCrop={smartCrop}
             onSmartCropChange={setSmartCrop}
+            smartCropTransition={smartCropTransition}
+            onSmartCropTransitionChange={setSmartCropTransition}
             subtitleFontSize={subtitleFontSize}
             subtitleFont={subtitleFont}
             systemFonts={systemFonts}
