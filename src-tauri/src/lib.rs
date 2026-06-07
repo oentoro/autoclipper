@@ -12,6 +12,7 @@ pub fn run() {
         .manage(commands::LlamaServerState::default())
         .manage(commands::WhisperDownloadState::default())
         .manage(commands::ProcessCancelState::default())
+        .manage(commands::YtDownloadState::default())
         .invoke_handler(tauri::generate_handler![
             check_dependencies,
             get_system_fonts,
@@ -33,6 +34,8 @@ pub fn run() {
             create_venv,
             cancel_transcription,
             cancel_clipping,
+            download_youtube,
+            cancel_youtube_download,
             check_license,
             activate_license,
             deactivate_license,

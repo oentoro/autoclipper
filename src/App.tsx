@@ -8,7 +8,7 @@ import ClipResults from "./components/ClipResults";
 import DepsCheck from "./components/DepsCheck";
 import ModelManager from "./components/ModelManager";
 import LicenseGate from "./components/LicenseGate";
-import type { SrtSegment, TranscribeResult, TranslateResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle, LicenseInfo } from "./types";
+import type { SrtSegment, TranscribeResult, TranslateResult, AnalyzeResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle, LicenseInfo, YtDownloadProgress } from "./types";
 import { DEFAULT_SUBTITLE_STYLE } from "./types";
 
 const WHISPER_LANGS = [
@@ -135,6 +135,9 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const transcribeStartRef = useRef<number>(0);
   const [cancelling, setCancelling] = useState(false);
   const cancellingRef = useRef(false);
+  const [youtubeDownloading, setYoutubeDownloading] = useState(false);
+  const [youtubeProgress, setYoutubeProgress] = useState<YtDownloadProgress | null>(null);
+  const youtubeCancelRef = useRef(false);
 
   function handleVideoSelect(path: string) {
     setVideoPath(path);
@@ -146,6 +149,34 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setClipResult(null);
     setTranscribeDuration(0);
     setStep("ready");
+  }
+
+  async function handleYoutubeDownload(url: string) {
+    youtubeCancelRef.current = false;
+    setYoutubeDownloading(true);
+    setYoutubeProgress(null);
+    setError("");
+
+    const unlisten = await listen<YtDownloadProgress>("yt-download-progress", event => {
+      setYoutubeProgress(event.payload);
+    });
+
+    try {
+      const filepath = await invoke<string>("download_youtube", { url });
+      handleVideoSelect(filepath);
+    } catch (e) {
+      if (!youtubeCancelRef.current) setError(String(e));
+    } finally {
+      unlisten();
+      setYoutubeDownloading(false);
+      setYoutubeProgress(null);
+      youtubeCancelRef.current = false;
+    }
+  }
+
+  async function handleCancelYoutube() {
+    youtubeCancelRef.current = true;
+    await invoke("cancel_youtube_download").catch(() => {});
   }
 
   async function handleCancel() {
@@ -222,6 +253,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         segments,
         sourceLanguage: detectedLanguage || "auto",
         targetLanguage: translateTarget,
+        modelPath: selectedLlm?.source === "local" ? selectedLlm.path : "",
+        ollamaModel: selectedLlm?.source === "ollama" ? selectedLlm.ollama_model : "",
       });
       setSegments(result.segments);
       setSrtContent(result.srt_content);
@@ -236,10 +269,14 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   async function handleClassify() {
     if (segments.length === 0) return;
     setLoading(true);
-    setLoadingMsg("AI sedang mengklasifikasikan bagian-bagian video...");
+    setLoadingMsg("Mendeteksi struktur video...");
     setError("");
     setSections([]);
     setSelectedIndices(new Set());
+
+    const unlistenClassify = await listen<string>("classify-progress", event => {
+      setLoadingMsg(event.payload);
+    });
 
     try {
       const modelPath = selectedLlm?.source === "local" ? selectedLlm.path : "";
@@ -250,6 +287,29 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         ollamaModel,
       });
       setSections(result.sections);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      unlistenClassify();
+      setLoading(false);
+      setLoadingMsg("");
+    }
+  }
+
+  async function handleAnalyze() {
+    if (segments.length === 0) return;
+    setLoading(true);
+    setLoadingMsg("AI sedang memilih segmen terpenting...");
+    setError("");
+    try {
+      const modelPath = selectedLlm?.source === "local" ? selectedLlm.path : "";
+      const ollamaModel = selectedLlm?.source === "ollama" ? selectedLlm.ollama_model : "";
+      const result = await invoke<AnalyzeResult>("analyze_transcript", {
+        segments,
+        modelPath,
+        ollamaModel,
+      });
+      setSelectedIndices(new Set(result.important_indices));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -318,6 +378,13 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setLoadingMsg(`Menggabungkan ${selectedIndices.size} segmen menjadi satu video...`);
     setError("");
 
+    const unlistenConcat = await listen<number>("clip-concat-percent", event => {
+      const pct = event.payload;
+      if (pct < 100) {
+        setLoadingMsg(`Menggabungkan segmen... ${pct}%`);
+      }
+    });
+
     const unlistenSmart = await listen<number>("clip-smart-percent", event => {
       const pct = event.payload;
       if (pct < 56) {
@@ -358,6 +425,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       if (!cancellingRef.current) setError(String(e));
       setStep("transcript");
     } finally {
+      unlistenConcat();
       unlistenSmart();
       unlistenBurn();
       setLoading(false);
@@ -389,6 +457,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   }
 
   function handleReset() {
+    if (segments.length > 0 && !confirm("Reset semua progres? Transkrip dan pilihan segmen akan hilang.")) return;
     setStep("upload");
     setVideoPath("");
     setSegments([]);
@@ -505,7 +574,14 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         )}
 
         {(step === "upload" || step === "transcribing") && (
-          <VideoUpload onSelect={handleVideoSelect} disabled={step === "transcribing"} />
+          <VideoUpload
+            onSelect={handleVideoSelect}
+            disabled={step === "transcribing"}
+            onYoutubeDownload={handleYoutubeDownload}
+            onCancelYoutube={handleCancelYoutube}
+            youtubeDownloading={youtubeDownloading}
+            youtubeProgress={youtubeProgress}
+          />
         )}
 
         {step === "ready" && (
@@ -612,6 +688,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             onSelectAll={selectAll}
             onClearAll={clearAll}
             onClassify={handleClassify}
+            onAnalyze={handleAnalyze}
             onToggleSection={toggleSection}
             onClip={handleClip}
             onSaveSrt={handleSaveSrt}

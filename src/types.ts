@@ -34,6 +34,13 @@ export interface ClassifyResult {
   sections: Section[];
 }
 
+export interface YtDownloadProgress {
+  percent: number;
+  speed: string;
+  eta: string;
+  phase: "downloading" | "merging" | "done";
+}
+
 export interface DownloadProgress {
   filename: string;
   downloaded: number;

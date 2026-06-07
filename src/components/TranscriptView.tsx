@@ -28,6 +28,7 @@ interface Props {
   onSelectAll: () => void;
   onClearAll: () => void;
   onClassify: () => void;
+  onAnalyze: () => void;
   onToggleSection: (sectionIdx: number) => void;
   onClip: () => void;
   onSaveSrt: () => void;
@@ -84,6 +85,7 @@ export default function TranscriptView({
   onSelectAll,
   onClearAll,
   onClassify,
+  onAnalyze,
   onToggleSection,
   onClip,
   onSaveSrt,
@@ -309,6 +311,14 @@ export default function TranscriptView({
             {hasSections && (
               <p className="classify-sections-count">{sections.length} bagian ditemukan</p>
             )}
+            <button
+              className="btn btn-secondary w-full"
+              onClick={onAnalyze}
+              disabled={loading || llmModels.length === 0}
+              title="AI memilih segmen-segmen paling penting secara otomatis"
+            >
+              ✨ Pilih Segmen Penting
+            </button>
             <div className="sidebar-actions-row">
               <button className="btn btn-secondary" onClick={onSelectAll}>✓ Pilih Semua</button>
               <button className="btn btn-ghost" onClick={onClearAll}>✕ Hapus</button>

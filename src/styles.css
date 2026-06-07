@@ -226,6 +226,97 @@ body {
 .upload-sub { color: var(--text2); margin-bottom: 20px; }
 .upload-btn { pointer-events: none; }
 
+/* Upload source tabs */
+.upload-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+}
+.upload-tab {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--text2);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.upload-tab:hover:not(:disabled) { color: var(--text); background: var(--bg2); }
+.upload-tab.active { background: var(--bg2); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
+.upload-tab:disabled { opacity: 0.5; cursor: default; }
+
+/* YouTube zone */
+.yt-zone {
+  border: 2px dashed var(--border);
+  border-radius: 16px;
+  padding: 48px 40px;
+  text-align: center;
+  background: var(--bg2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.yt-icon { font-size: 40px; color: #ff0000; }
+.yt-hint { font-size: 16px; font-weight: 600; }
+.yt-input-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  max-width: 520px;
+}
+.yt-input {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.yt-input:focus { border-color: var(--accent); }
+.yt-req { font-size: 12px; color: var(--text2); }
+.yt-req code { background: var(--bg3); padding: 1px 5px; border-radius: 4px; font-family: monospace; }
+
+/* YouTube progress */
+.yt-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 420px;
+}
+.yt-progress-label { font-size: 14px; color: var(--text2); font-variant-numeric: tabular-nums; }
+.yt-progress-bar-track {
+  width: 100%;
+  height: 8px;
+  background: var(--bg3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.yt-progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+.yt-progress-bar-fill.indeterminate {
+  width: 40% !important;
+  animation: yt-slide 1.2s ease-in-out infinite;
+}
+@keyframes yt-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
 .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .feature-card {
   background: var(--bg2);

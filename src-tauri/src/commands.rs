@@ -120,6 +120,19 @@ pub struct ProcessCancelState {
     pub clip_pid:       Mutex<Option<u32>>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct YtDownloadProgress {
+    pub percent: f32,
+    pub speed:   String,
+    pub eta:     String,
+    pub phase:   String, // "downloading" | "merging" | "done"
+}
+
+#[derive(Default)]
+pub struct YtDownloadState {
+    pub pid: Mutex<Option<u32>>,
+}
+
 fn kill_pid(pid: u32) {
     #[cfg(unix)]
     unsafe { libc::kill(pid as i32, libc::SIGTERM); }
@@ -137,6 +150,13 @@ pub fn cancel_transcription(state: tauri::State<'_, ProcessCancelState>) {
 #[tauri::command]
 pub fn cancel_clipping(state: tauri::State<'_, ProcessCancelState>) {
     if let Ok(mut g) = state.clip_pid.lock() {
+        if let Some(pid) = g.take() { kill_pid(pid); }
+    }
+}
+
+#[tauri::command]
+pub fn cancel_youtube_download(state: tauri::State<'_, YtDownloadState>) {
+    if let Ok(mut g) = state.pid.lock() {
         if let Some(pid) = g.take() { kill_pid(pid); }
     }
 }
@@ -432,6 +452,37 @@ fn find_llama_server(app: &tauri::AppHandle) -> Option<String> {
     which(if cfg!(windows) { "llama-server.exe" } else { "llama-server" })
 }
 
+fn find_ytdlp() -> Option<String> {
+    // Check venv first (where user likely installed it via pip)
+    let venv = venv_dir();
+    #[cfg(not(target_os = "windows"))]
+    let venv_bin = venv.join("bin").join("yt-dlp");
+    #[cfg(target_os = "windows")]
+    let venv_bin = venv.join("Scripts").join("yt-dlp.exe");
+    if venv_bin.exists() { return Some(venv_bin.to_string_lossy().to_string()); }
+    // System PATH
+    which(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" })
+}
+
+fn parse_yt_percent(line: &str) -> Option<f32> {
+    let pct_pos = line.find('%')?;
+    let before = line[..pct_pos].trim_end();
+    let num_start = before.rfind(|c: char| c.is_whitespace()).map(|i| i + 1).unwrap_or(0);
+    before[num_start..].parse::<f32>().ok()
+}
+
+fn parse_yt_speed(line: &str) -> String {
+    line.find(" at ").map(|pos| {
+        line[pos + 4..].split_whitespace().next().unwrap_or("").to_string()
+    }).unwrap_or_default()
+}
+
+fn parse_yt_eta(line: &str) -> String {
+    line.find("ETA ").map(|pos| {
+        line[pos + 4..].split_whitespace().next().unwrap_or("").to_string()
+    }).unwrap_or_default()
+}
+
 /// Turn a GGUF filename stem into a readable display name.
 /// e.g. "gemma-3-4b-it-Q4_K_M" → "Gemma 3 4B (Q4_K_M)"
 fn format_gguf_name(stem: &str) -> String {
@@ -540,8 +591,8 @@ fn sample_segments(segments: &[SrtSegment], max: usize) -> Vec<&SrtSegment> {
     out
 }
 
-fn build_classify_prompt(segments: &[SrtSegment]) -> String {
-    let segs = sample_segments(segments, 300);
+fn build_classify_pass1_prompt(segments: &[SrtSegment]) -> String {
+    let segs = sample_segments(segments, 200);
     let text: String = segs.iter()
         .map(|s| format!("[{}] {}: {}", s.index, s.start_time, s.text))
         .collect::<Vec<_>>().join("\n");
@@ -550,14 +601,46 @@ fn build_classify_prompt(segments: &[SrtSegment]) -> String {
     let mins  = segments.last().map(|s| s.end as u64 / 60).unwrap_or(0);
     format!(
         "Transkrip video (~{mins} menit, segmen {first}\u{2013}{last}):\n\n{text}\n\n\
-Bagi menjadi bagian-bagian berurutan berdasarkan topik. \
-Setiap bagian MAKSIMAL 60 detik (perhatikan timestamp untuk memastikan durasi). \
+Identifikasi 3\u{2013}5 topik utama dalam video ini. \
 Balas HANYA dengan JSON (tanpa teks lain):\n\
 {{\"sections\":[\
-{{\"name\":\"Pembukaan\",\"summary\":\"Ringkasan satu kalimat.\",\"start_index\":{first},\"end_index\":10}},\
-{{\"name\":\"Isi Utama\",\"summary\":\"Ringkasan satu kalimat.\",\"start_index\":11,\"end_index\":{last}}}\
+{{\"name\":\"Pembukaan\",\"start_index\":{first},\"end_index\":10}},\
+{{\"name\":\"Isi Utama\",\"start_index\":11,\"end_index\":{last}}}\
 ]}}\n\
-Aturan: bagian berurutan, mencakup semua segmen, nama max 4 kata, durasi tiap bagian max 60 detik."
+Aturan: nama max 3 kata, bagian berurutan, mencakup semua segmen dari {first} hingga {last}."
+    )
+}
+
+fn sample_seg_refs<'a>(segs: &[&'a SrtSegment], max: usize) -> Vec<&'a SrtSegment> {
+    if segs.len() <= max { return segs.to_vec(); }
+    let mut out = Vec::with_capacity(max);
+    out.push(segs[0]);
+    let inner_slots = max - 2;
+    let step = (segs.len() - 2) as f64 / inner_slots as f64;
+    for i in 0..inner_slots {
+        let idx = (1 + (i as f64 * step).round() as usize).min(segs.len() - 2);
+        out.push(segs[idx]);
+    }
+    out.push(segs[segs.len() - 1]);
+    out
+}
+
+fn build_classify_pass2_prompt(section_name: &str, segs: &[&SrtSegment]) -> String {
+    let sampled = sample_seg_refs(segs, 200);
+    let text: String = sampled.iter()
+        .map(|s| format!("[{}] {}: {}", s.index, s.start_time, s.text))
+        .collect::<Vec<_>>().join("\n");
+    let first = segs.first().map(|s| s.index).unwrap_or(1);
+    let last  = segs.last().map(|s| s.index).unwrap_or(1);
+    format!(
+        "Bagian video: '{section_name}'\n\
+Segmen (dari {first} hingga {last}):\n\n{text}\n\n\
+Pecah bagian ini menjadi momen-momen spesifik 10\u{2013}30 detik. \
+Balas HANYA dengan JSON (tanpa teks lain):\n\
+{{\"sections\":[\
+{{\"name\":\"Nama Spesifik\",\"summary\":\"Ringkasan satu kalimat.\",\"start_index\":{first},\"end_index\":{first}}}\
+]}}\n\
+Aturan: nama UNIK dan sangat spesifik (max 4 kata), bagian berurutan, mencakup semua segmen dari {first} hingga {last}."
     )
 }
 
@@ -625,7 +708,7 @@ async fn ensure_llama_server(
     let mut args = vec![
         "--model".to_string(), model_path.to_string(),
         "--port".to_string(), LLAMA_PORT.to_string(),
-        "--ctx-size".to_string(), "16384".to_string(),
+        "--ctx-size".to_string(), "32768".to_string(),
         "--threads".to_string(), "4".to_string(),
         "--parallel".to_string(), "1".to_string(),
     ];
@@ -694,20 +777,13 @@ async fn infer_llama_server(prompt: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Response tidak valid: {json}"))
 }
 
-async fn run_llm_task(
+async fn run_llm_prompt(
     app: &tauri::AppHandle,
     server_state: &LlamaServerState,
-    task: &str,
-    segments: &[SrtSegment],
+    prompt: &str,
     model_path: &str,
     ollama_model: &str,
 ) -> Result<String, String> {
-    let prompt = if task == "classify" {
-        build_classify_prompt(segments)
-    } else {
-        build_analyze_prompt(segments)
-    };
-
     let resolved_path = if !model_path.is_empty() && Path::new(model_path).exists() {
         Some(model_path.to_string())
     } else if model_path.is_empty() {
@@ -718,13 +794,29 @@ async fn run_llm_task(
 
     if let Some(mp) = resolved_path {
         ensure_llama_server(app, server_state, &mp).await?;
-        infer_llama_server(&prompt).await
+        infer_llama_server(prompt).await
     } else {
         let om = if ollama_model.is_empty() { "gemma4:latest" } else { ollama_model };
-        infer_ollama_api(om, &prompt).await.map_err(|e|
+        infer_ollama_api(om, prompt).await.map_err(|e|
             format!("{e}\n\nUntuk menggunakan model lokal: unduh model GGUF via menu '🤖 Model AI'.")
         )
     }
+}
+
+async fn run_llm_task(
+    app: &tauri::AppHandle,
+    server_state: &LlamaServerState,
+    task: &str,
+    segments: &[SrtSegment],
+    model_path: &str,
+    ollama_model: &str,
+) -> Result<String, String> {
+    let prompt = if task == "classify" {
+        build_classify_pass1_prompt(segments)
+    } else {
+        build_analyze_prompt(segments)
+    };
+    run_llm_prompt(app, server_state, &prompt, model_path, ollama_model).await
 }
 
 // ─── Video helpers ────────────────────────────────────────────────────────────
@@ -827,13 +919,18 @@ fn build_retimed_entries(groups: &[ClipGroup]) -> Vec<serde_json::Value> {
 // Stream copy with fast input seek snaps to the nearest keyframe which can
 // include a few frames of content before the intended start, causing repeats
 // when the clip is played back after concatenation.
-fn encode_one_group(
-    ffmpeg: &str, video_path: &str, group: &ClipGroup,
+async fn encode_one_group(
+    app: &tauri::AppHandle,
+    ffmpeg: &str, video_path: &str, group: &ClipGroup<'_>,
     crop_filter: Option<&str>, dest: &str,
     pid_cell: &Mutex<Option<u32>>,
 ) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
     let ss  = format!("{:.6}", group.start_sec);
     let dur = format!("{:.6}", group.duration());
+    let total_us = (group.duration() * 1_000_000.0) as i64;
 
     let mut args = vec![
         "-y".to_string(),
@@ -851,17 +948,40 @@ fn encode_one_group(
         "-threads".to_string(), "0".to_string(),
         "-c:a".to_string(), "aac".to_string(),
         "-b:a".to_string(), "128k".to_string(),
+        "-progress".to_string(), "pipe:1".to_string(),
+        "-nostats".to_string(),
         dest.to_string(),
     ]);
 
-    let mut child = Command::new(ffmpeg)
+    let mut child = TokioCommand::new(ffmpeg)
         .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
-    *pid_cell.lock().unwrap() = Some(child.id());
-    let status = child.wait()
+    if let Some(pid) = child.id() { *pid_cell.lock().unwrap() = Some(pid); }
+
+    if let Some(stdout) = child.stdout.take() {
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                if let Some(val) = line.strip_prefix("out_time_ms=") {
+                    if let Ok(us) = val.trim().parse::<i64>() {
+                        if total_us > 0 && us >= 0 {
+                            let pct = ((us as f64 / total_us as f64) * 100.0).clamp(0.0, 99.0) as u8;
+                            let _ = app_clone.emit("clip-concat-percent", pct);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    let status = child.wait().await
         .map_err(|e| format!("Gagal menunggu FFmpeg: {e}"))?;
     *pid_cell.lock().unwrap() = None;
+    let _ = app.emit("clip-concat-percent", 100u8);
 
     if status.success() { Ok(()) } else { Err("FFmpeg gagal mengekstrak klip.".to_string()) }
 }
@@ -869,15 +989,20 @@ fn encode_one_group(
 // Multiple groups: build ONE FFmpeg command with N inputs (each fast-seeked) and
 // a filter_complex concat. This produces correct timestamps without temp files
 // and avoids the 2x-speed bug caused by stream-copy + concat demuxer.
-fn concat_groups(
-    ffmpeg: &str, video_path: &str, groups: &[ClipGroup],
+async fn concat_groups(
+    app: &tauri::AppHandle,
+    ffmpeg: &str, video_path: &str, groups: &[ClipGroup<'_>],
     crop_filter: Option<&str>, dest: &str,
     pid_cell: &Mutex<Option<u32>>,
 ) -> Result<(), String> {
     if groups.len() == 1 {
-        return encode_one_group(ffmpeg, video_path, &groups[0], crop_filter, dest, pid_cell);
+        return encode_one_group(app, ffmpeg, video_path, &groups[0], crop_filter, dest, pid_cell).await;
     }
 
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    let total_us = (groups.iter().map(|g| g.duration()).sum::<f64>() * 1_000_000.0) as i64;
     let n = groups.len();
     let mut args: Vec<String> = vec!["-y".to_string()];
 
@@ -915,20 +1040,43 @@ fn concat_groups(
         "-c:v".to_string(), "libx264".to_string(),
         "-preset".to_string(), "fast".to_string(),
         "-crf".to_string(), "23".to_string(),
-        "-threads".to_string(), "0".to_string(),  // all cores for this one encode pass
+        "-threads".to_string(), "0".to_string(),
         "-c:a".to_string(), "aac".to_string(),
         "-b:a".to_string(), "128k".to_string(),
+        "-progress".to_string(), "pipe:1".to_string(),
+        "-nostats".to_string(),
         dest.to_string(),
     ]);
 
-    let mut child = Command::new(ffmpeg)
+    let mut child = TokioCommand::new(ffmpeg)
         .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("Gagal menjalankan FFmpeg: {e}"))?;
-    *pid_cell.lock().unwrap() = Some(child.id());
-    let status = child.wait()
+    if let Some(pid) = child.id() { *pid_cell.lock().unwrap() = Some(pid); }
+
+    if let Some(stdout) = child.stdout.take() {
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                if let Some(val) = line.strip_prefix("out_time_ms=") {
+                    if let Ok(us) = val.trim().parse::<i64>() {
+                        if total_us > 0 && us >= 0 {
+                            let pct = ((us as f64 / total_us as f64) * 100.0).clamp(0.0, 99.0) as u8;
+                            let _ = app_clone.emit("clip-concat-percent", pct);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    let status = child.wait().await
         .map_err(|e| format!("Gagal menunggu FFmpeg: {e}"))?;
     *pid_cell.lock().unwrap() = None;
+    let _ = app.emit("clip-concat-percent", 100u8);
 
     if status.success() { Ok(()) } else { Err("FFmpeg gagal menggabungkan klip.".to_string()) }
 }
@@ -953,55 +1101,31 @@ fn build_srt(segments: &[SrtSegment]) -> String {
     }).collect::<Vec<_>>().join("\n")
 }
 
-async fn translate_batch(
-    client: &reqwest::Client,
-    texts: &[String],
-    source_lang: &str,
-    target_lang: &str,
-) -> Result<Vec<String>, String> {
-    let src = lang_display_name(source_lang);
-    let tgt = lang_display_name(target_lang);
-    let input_json = serde_json::to_string(texts).unwrap();
-
-    let prompt = format!(
+fn build_translate_prompt(input_json: &str, src: &str, tgt: &str) -> String {
+    format!(
         "Translate the following subtitle texts from {src} to {tgt}.\n\
         Return ONLY a JSON array of translated strings, same count and order as input.\n\
         No explanation, no extra text — only the JSON array.\n\n\
         Input: {input_json}\n\nOutput:"
-    );
+    )
+}
 
-    let body = serde_json::json!({
-        "model": "gemma4:latest",
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": false
-    });
+fn extract_json_object(s: &str) -> &str {
+    let start = s.find('{').unwrap_or(0);
+    let end   = s.rfind('}').map(|i| i + 1).unwrap_or(s.len());
+    &s[start..end]
+}
 
-    let response = client
-        .post("http://localhost:11434/api/chat")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(180))
-        .send().await
-        .map_err(|e| format!("Gagal koneksi ke Ollama: {e}. Pastikan Ollama berjalan."))?;
-
-    if !response.status().is_success() {
-        return Err(format!("Ollama error: HTTP {}", response.status()));
-    }
-
-    let resp: serde_json::Value = response.json().await
-        .map_err(|e| format!("Gagal parse response Ollama: {e}"))?;
-
-    let content = resp["message"]["content"].as_str()
-        .ok_or("Response Ollama kosong")?;
-
-    // Extract JSON array (model might prepend/append text)
-    let start = content.find('[').ok_or_else(|| format!("JSON array tidak ditemukan di response: {content}"))?;
-    let end   = content.rfind(']').ok_or("Penutup JSON array tidak ditemukan")?;
+fn parse_translate_array(content: &str, expected_len: usize) -> Result<Vec<String>, String> {
+    let start = content.find('[')
+        .ok_or_else(|| format!("JSON array tidak ditemukan di response: {content}"))?;
+    let end = content.rfind(']')
+        .ok_or("Penutup JSON array tidak ditemukan")?;
     let arr: Vec<String> = serde_json::from_str(&content[start..=end])
         .map_err(|e| format!("Gagal parse array terjemahan: {e}\nContent: {content}"))?;
-
-    if arr.len() != texts.len() {
+    if arr.len() != expected_len {
         return Err(format!(
-            "Jumlah teks tidak cocok: dikirim {}, diterima {}", texts.len(), arr.len()
+            "Jumlah teks tidak cocok: dikirim {}, diterima {}", expected_len, arr.len()
         ));
     }
     Ok(arr)
@@ -1009,18 +1133,49 @@ async fn translate_batch(
 
 #[tauri::command]
 pub async fn translate_transcript(
+    app: tauri::AppHandle,
+    server: tauri::State<'_, LlamaServerState>,
     segments: Vec<SrtSegment>,
     source_language: String,
     target_language: String,
+    model_path: String,
+    ollama_model: String,
 ) -> Result<TranslateResult, String> {
-    let client = reqwest::Client::new();
+    // Resolve backend — same logic as classify/analyze
+    let use_llama = {
+        let resolved = if !model_path.is_empty() && Path::new(&model_path).exists() {
+            Some(model_path.clone())
+        } else if model_path.is_empty() {
+            find_llm_model(&app)
+        } else {
+            None
+        };
+        if let Some(mp) = resolved {
+            ensure_llama_server(&app, &*server, &mp).await?;
+            true
+        } else {
+            false
+        }
+    };
+    let ollama_model_str = if ollama_model.is_empty() { "gemma4:latest" } else { &ollama_model };
+
     let all_texts: Vec<String> = segments.iter().map(|s| s.text.clone()).collect();
     let mut translated: Vec<String> = Vec::new();
 
-    // Batch to avoid overwhelming the model
     for chunk in all_texts.chunks(25) {
-        let batch = translate_batch(&client, chunk, &source_language, &target_language).await?;
-        translated.extend(batch);
+        let src = lang_display_name(&source_language);
+        let tgt = lang_display_name(&target_language);
+        let prompt = build_translate_prompt(&serde_json::to_string(chunk).unwrap(), src, tgt);
+
+        let content = if use_llama {
+            infer_llama_server(&prompt).await?
+        } else {
+            infer_ollama_api(ollama_model_str, &prompt).await.map_err(|e|
+                format!("{e}\n\nUntuk menggunakan model lokal: unduh model GGUF via menu '🤖 Model AI'.")
+            )?
+        };
+
+        translated.extend(parse_translate_array(&content, chunk.len())?);
     }
 
     let mut new_segments = segments;
@@ -1309,6 +1464,21 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         optional: true,
     });
 
+    let ytdlp_path = find_ytdlp();
+    let ytdlp_ok = ytdlp_path.is_some();
+    let ytdlp_install = pip_install("yt-dlp");
+    checks.push(DepCheck {
+        name: "yt-dlp (YouTube Download)".to_string(),
+        ok: ytdlp_ok,
+        path: ytdlp_path,
+        error: if !ytdlp_ok {
+            Some("yt-dlp belum terinstall — diperlukan untuk download video dari YouTube".to_string())
+        } else { None },
+        install_cmd: if !ytdlp_ok { Some(ytdlp_install) } else { None },
+        download_url: None,
+        optional: true,
+    });
+
     let ollama_ok = reqwest::Client::new()
         .get("http://localhost:11434/api/tags")
         .timeout(std::time::Duration::from_secs(3))
@@ -1436,55 +1606,10 @@ pub async fn analyze_transcript(
     ollama_model: String,
 ) -> Result<AnalyzeResult, String> {
     let content = run_llm_task(&app, &*server, "analyze", &segments, &model_path, &ollama_model).await?;
-    serde_json::from_str(&content)
+    serde_json::from_str(extract_json_object(&content))
         .map_err(|e| format!("Gagal parse JSON dari AI: {e}\nContent: {content}"))
 }
 
-#[tauri::command]
-// Split any section whose actual duration (from segments) exceeds max_sec into
-// consecutive sub-sections. Each sub-section gets a numbered suffix in its name.
-fn split_long_sections(sections: Vec<Section>, segments: &[SrtSegment], max_sec: f64) -> Vec<Section> {
-    let mut result = Vec::new();
-
-    for section in sections {
-        let segs: Vec<&SrtSegment> = segments.iter()
-            .filter(|s| s.index >= section.start_index && s.index <= section.end_index)
-            .collect();
-
-        if segs.is_empty() {
-            result.push(section);
-            continue;
-        }
-
-        let total_dur = segs.last().unwrap().end - segs.first().unwrap().start;
-        if total_dur <= max_sec {
-            result.push(section);
-            continue;
-        }
-
-        // Walk through segments, closing a sub-section when adding the next one
-        // would exceed max_sec from the current sub-section's start.
-        let mut i = 0;
-        let mut part = 1usize;
-        while i < segs.len() {
-            let chunk_start = segs[i].start;
-            let mut j = i;
-            while j + 1 < segs.len() && segs[j + 1].end - chunk_start <= max_sec {
-                j += 1;
-            }
-            result.push(Section {
-                name:        format!("{} ({})", section.name, part),
-                summary:     section.summary.clone(),
-                start_index: segs[i].index,
-                end_index:   segs[j].index,
-            });
-            i = j + 1;
-            part += 1;
-        }
-    }
-
-    result
-}
 
 #[tauri::command]
 pub async fn classify_transcript(
@@ -1501,37 +1626,81 @@ pub async fn classify_transcript(
     let first_idx = segments.first().map(|s| s.index).unwrap_or(1);
     let last_idx  = segments.last().map(|s| s.index).unwrap_or(1);
 
-    let content = run_llm_task(&app, &*server, "classify", &segments, &model_path, &ollama_model).await?;
+    // ── Pass 1: Broad topic structure ────────────────────────────────────────
+    let _ = app.emit("classify-progress", "Mendeteksi struktur video...");
 
-    let mut result: ClassifyResult = serde_json::from_str(&content)
-        .map_err(|e| format!("Gagal parse klasifikasi: {e}\nContent: {content}"))?;
+    let pass1_prompt = build_classify_pass1_prompt(&segments);
+    let pass1_content = run_llm_prompt(&app, &*server, &pass1_prompt, &model_path, &ollama_model).await?;
 
-    // If the model omitted start_index/end_index (all defaulted to 0), distribute
-    // segments evenly across sections so the result is still useful.
-    let all_missing = result.sections.iter().all(|s| s.start_index == 0 && s.end_index == 0);
-    if all_missing && !result.sections.is_empty() {
-        let n = result.sections.len();
-        let step = (segments.len() + n - 1) / n; // ceiling div
-        for (i, sec) in result.sections.iter_mut().enumerate() {
+    #[derive(serde::Deserialize)]
+    struct BroadSec { name: String, start_index: usize, end_index: usize }
+    #[derive(serde::Deserialize)]
+    struct BroadResult { sections: Vec<BroadSec> }
+
+    let mut broad: BroadResult = serde_json::from_str(extract_json_object(&pass1_content))
+        .map_err(|e| format!("Gagal parse struktur awal: {e}\nContent: {pass1_content}"))?;
+
+    if broad.sections.iter().all(|s| s.start_index == 0 && s.end_index == 0) {
+        let n = broad.sections.len().max(1);
+        let step = (segments.len() + n - 1) / n;
+        for (i, sec) in broad.sections.iter_mut().enumerate() {
             let a = (i * step).min(segments.len() - 1);
             let b = ((i + 1) * step).saturating_sub(1).min(segments.len() - 1);
             sec.start_index = segments[a].index;
             sec.end_index   = segments[b].index;
         }
     }
-
-    for sec in &mut result.sections {
+    for sec in &mut broad.sections {
         sec.start_index = sec.start_index.max(first_idx);
         sec.end_index   = sec.end_index.min(last_idx).max(sec.start_index);
     }
-    if let Some(last) = result.sections.last_mut() {
-        last.end_index = last_idx;
+    if let Some(last) = broad.sections.last_mut() { last.end_index = last_idx; }
+
+    // ── Pass 2: Micro-topics per broad section ───────────────────────────────
+    let broad_count = broad.sections.len();
+    let mut micro_sections: Vec<Section> = Vec::new();
+
+    for (i, broad_sec) in broad.sections.iter().enumerate() {
+        let _ = app.emit("classify-progress",
+            format!("Memecah mikro-topik ({} dari {})...", i + 1, broad_count));
+
+        let section_segs: Vec<&SrtSegment> = segments.iter()
+            .filter(|s| s.index >= broad_sec.start_index && s.index <= broad_sec.end_index)
+            .collect();
+        if section_segs.is_empty() { continue; }
+
+        let pass2_prompt = build_classify_pass2_prompt(&broad_sec.name, &section_segs);
+        let pass2_content = run_llm_prompt(&app, &*server, &pass2_prompt, &model_path, &ollama_model).await?;
+
+        let mut partial: ClassifyResult = serde_json::from_str(extract_json_object(&pass2_content))
+            .map_err(|e| format!("Gagal parse mikro-topik '{}': {e}\nContent: {pass2_content}", broad_sec.name))?;
+
+        let sec_first = section_segs.first().map(|s| s.index).unwrap_or(broad_sec.start_index);
+        let sec_last  = section_segs.last().map(|s| s.index).unwrap_or(broad_sec.end_index);
+
+        if partial.sections.iter().all(|s| s.start_index == 0 && s.end_index == 0) {
+            let n = partial.sections.len().max(1);
+            let step = (section_segs.len() + n - 1) / n;
+            for (j, sec) in partial.sections.iter_mut().enumerate() {
+                let a = (j * step).min(section_segs.len() - 1);
+                let b = ((j + 1) * step).saturating_sub(1).min(section_segs.len() - 1);
+                sec.start_index = section_segs[a].index;
+                sec.end_index   = section_segs[b].index;
+            }
+        }
+        for sec in &mut partial.sections {
+            sec.start_index = sec.start_index.max(sec_first);
+            sec.end_index   = sec.end_index.min(sec_last).max(sec.start_index);
+        }
+        if let Some(last) = partial.sections.last_mut() { last.end_index = sec_last; }
+
+        micro_sections.extend(partial.sections);
     }
 
-    // Guarantee every section is ≤ 60 seconds regardless of what the AI produced
-    result.sections = split_long_sections(result.sections, &segments, 60.0);
+    if let Some(first) = micro_sections.first_mut() { first.start_index = first_idx; }
+    if let Some(last) = micro_sections.last_mut() { last.end_index = last_idx; }
 
-    Ok(result)
+    Ok(ClassifyResult { sections: micro_sections })
 }
 
 async fn exec_smart_crop(
@@ -1720,13 +1889,13 @@ pub async fn clip_video(
     match (burn_subtitles, needs_smart) {
         // ── Case 1: no burn, no smart crop ────────────────────────────────
         (false, false) => {
-            concat_groups(&ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), &output_path, pid_cell)?;
+            concat_groups(&app, &ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), &output_path, pid_cell).await?;
         }
 
         // ── Case 2: burn only, no smart crop ──────────────────────────────
         (true, false) => {
             let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
-            concat_groups(&ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), tmp.to_str().unwrap(), pid_cell)?;
+            concat_groups(&app, &ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), tmp.to_str().unwrap(), pid_cell).await?;
             let entries = build_retimed_entries(&groups);
             let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, pid_cell).await;
             let _ = std::fs::remove_file(&tmp);
@@ -1736,7 +1905,7 @@ pub async fn clip_video(
         // ── Case 3: smart crop only, no burn ──────────────────────────────
         (false, true) => {
             let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
-            concat_groups(&ffmpeg, &video_path, &groups, None, tmp.to_str().unwrap(), pid_cell)?;
+            concat_groups(&app, &ffmpeg, &video_path, &groups, None, tmp.to_str().unwrap(), pid_cell).await?;
             let r = exec_smart_crop(&app, &python, &ffmpeg, tmp.to_str().unwrap(), &output_path, &aspect_ratio, &smart_crop_transition, pid_cell).await;
             let _ = std::fs::remove_file(&tmp);
             r?;
@@ -1746,7 +1915,7 @@ pub async fn clip_video(
         (true, true) => {
             let tmp_concat = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
             let tmp_smart  = std::env::temp_dir().join("autoclipper_smart_tmp.mp4");
-            concat_groups(&ffmpeg, &video_path, &groups, None, tmp_concat.to_str().unwrap(), pid_cell)?;
+            concat_groups(&app, &ffmpeg, &video_path, &groups, None, tmp_concat.to_str().unwrap(), pid_cell).await?;
             let r = exec_smart_crop(&app, &python, &ffmpeg, tmp_concat.to_str().unwrap(), tmp_smart.to_str().unwrap(), &aspect_ratio, &smart_crop_transition, pid_cell).await;
             let _ = std::fs::remove_file(&tmp_concat);
             r?;
@@ -1775,6 +1944,107 @@ pub async fn clip_video(
         total_segments,
         duration_secs: total_duration,
     })
+}
+
+// ─── YouTube download ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn download_youtube(
+    app: tauri::AppHandle,
+    cancel: tauri::State<'_, YtDownloadState>,
+    url: String,
+) -> Result<String, String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    let ytdlp = find_ytdlp().ok_or_else(|| {
+        "yt-dlp tidak ditemukan.\n\
+         Install: pip install yt-dlp  (atau: brew install yt-dlp di macOS)".to_string()
+    })?;
+
+    // Save to ~/Downloads; fall back to temp if unavailable
+    let out_dir = app.path().download_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let out_template = out_dir
+        .join("%(title)s [%(id)s].%(ext)s")
+        .to_string_lossy()
+        .to_string();
+
+    let mut child = TokioCommand::new(&ytdlp)
+        .args([
+            "--newline", "--no-colors",
+            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "-o", &out_template,
+            "--no-playlist",
+            "--print", "after_move:filepath",
+            &url,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Gagal menjalankan yt-dlp: {e}"))?;
+
+    if let Some(pid) = child.id() { *cancel.pid.lock().unwrap() = Some(pid); }
+
+    // Stream stderr → progress events
+    if let Some(stderr) = child.stderr.take() {
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                let prog = if line.starts_with("[download]") && line.contains('%') {
+                    Some(YtDownloadProgress {
+                        percent: parse_yt_percent(&line).unwrap_or(0.0),
+                        speed:   parse_yt_speed(&line),
+                        eta:     parse_yt_eta(&line),
+                        phase:   "downloading".to_string(),
+                    })
+                } else if line.starts_with("[Merger]") || line.contains("Merging formats") {
+                    Some(YtDownloadProgress {
+                        percent: 99.0, speed: String::new(),
+                        eta: String::new(), phase: "merging".to_string(),
+                    })
+                } else { None };
+                if let Some(p) = prog { let _ = app_clone.emit("yt-download-progress", p); }
+            }
+        });
+    }
+
+    // Read stdout (filepath from --print after_move:filepath)
+    let stdout_task = if let Some(stdout) = child.stdout.take() {
+        Some(tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout).lines();
+            let mut last = String::new();
+            while let Ok(Some(line)) = reader.next_line().await {
+                let t = line.trim().to_string();
+                if !t.is_empty() { last = t; }
+            }
+            last
+        }))
+    } else { None };
+
+    let status = child.wait().await
+        .map_err(|e| format!("yt-dlp error: {e}"))?;
+    *cancel.pid.lock().unwrap() = None;
+
+    if !status.success() {
+        return Err("Download dibatalkan atau URL tidak valid. Pastikan URL YouTube benar dan yt-dlp versi terbaru.".to_string());
+    }
+
+    let filepath = if let Some(task) = stdout_task {
+        task.await.unwrap_or_default()
+    } else { String::new() };
+
+    if filepath.is_empty() || !std::path::Path::new(&filepath).exists() {
+        return Err("File hasil download tidak ditemukan. Coba perbarui yt-dlp: pip install -U yt-dlp".to_string());
+    }
+
+    let _ = app.emit("yt-download-progress", YtDownloadProgress {
+        percent: 100.0, speed: String::new(), eta: String::new(), phase: "done".to_string(),
+    });
+
+    Ok(filepath)
 }
 
 // ─── LLM download helpers ─────────────────────────────────────────────────────
