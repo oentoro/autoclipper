@@ -211,7 +211,22 @@ def draw_subtitle(img, text, font, line_h, style):
     composited = Image.alpha_composite(img.convert("RGBA"), overlay)
     return composited.convert("RGB")
 
-def burn(input_path, entries, output_path, font_size=0, font_path=None, style=None):
+def draw_title(img, text, font, style):
+    """Draw a persistent title at the top of the frame."""
+    w, h = img.size
+    line_h = font.size + 8 if hasattr(font, 'size') else 40
+    title_style = {
+        "textColor": style.get("titleColor", "#ffffff"),
+        "outlineColor": "#000000",
+        "outlineWidth": 2,
+        "allCaps": False,
+        "boxEnabled": False,
+        "position": "top",
+    }
+    return draw_subtitle(img, text, font, line_h, title_style)
+
+def burn(input_path, entries, output_path, font_size=0, font_path=None, style=None,
+         title="", title_font_size=0, title_color="#ffffff"):
     if style is None:
         style = {}
     w, h, fps, total_frames = get_video_info(input_path)
@@ -222,6 +237,11 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
     # Emit roughly one progress update per percent (min every 10 frames)
     progress_interval = max(10, total_frames // 100) if total_frames > 0 else 30
 
+    has_title = bool(title and title.strip())
+    actual_title_size = title_font_size if title_font_size > 0 else max(32, h // 18)
+    title_font = find_font(actual_title_size, font_path) if has_title else None
+    title_style = {"titleColor": title_color}
+
     decode = subprocess.Popen(
         [FFMPEG, "-i", input_path, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -231,7 +251,7 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
          "-f", "rawvideo", "-pix_fmt", "rgb24",
          "-s", f"{w}x{h}", "-r", f"{fps:.6f}", "-i", "pipe:0",
          "-i", input_path,
-         "-map", "0:v", "-map", "1:a",
+         "-map", "0:v", "-map", "1:a?",
          "-c:v", "libx264", "-preset", "fast", "-crf", "23",
          "-c:a", "copy", output_path],
         stdin=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -246,9 +266,13 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
                 break
             t    = frame_num / fps
             text = get_text_at(t, entries)
-            if text:
+            needs_draw = text or has_title
+            if needs_draw:
                 img = Image.frombytes("RGB", (w, h), chunk)
-                img = draw_subtitle(img, text, font, line_h, style)
+                if text:
+                    img = draw_subtitle(img, text, font, line_h, style)
+                if has_title:
+                    img = draw_title(img, title, title_font, title_style)
                 encode.stdin.write(img.tobytes())
             else:
                 encode.stdin.write(chunk)
@@ -273,6 +297,9 @@ if __name__ == "__main__":
     parser.add_argument("--font-size", type=int, default=0, help="0 = auto")
     parser.add_argument("--font", type=str, default="", help="Path to font file")
     parser.add_argument("--style", type=str, default="{}", help="JSON subtitle style options")
+    parser.add_argument("--title", type=str, default="", help="Persistent title text at top")
+    parser.add_argument("--title-font-size", type=int, default=0, help="0 = auto")
+    parser.add_argument("--title-color", type=str, default="#ffffff", help="Title text color")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -293,6 +320,9 @@ if __name__ == "__main__":
             font_size=args.font_size,
             font_path=args.font if args.font else None,
             style=style,
+            title=args.title,
+            title_font_size=args.title_font_size,
+            title_color=args.title_color,
         )
         os.write(1, (json.dumps({"success": True, "frames": frames}) + "\n").encode("utf-8"))
     except Exception as e:

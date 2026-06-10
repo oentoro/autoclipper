@@ -8,7 +8,8 @@ import ClipResults from "./components/ClipResults";
 import DepsCheck from "./components/DepsCheck";
 import ModelManager from "./components/ModelManager";
 import LicenseGate from "./components/LicenseGate";
-import type { SrtSegment, TranscribeResult, TranslateResult, AnalyzeResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle, LicenseInfo, YtDownloadProgress } from "./types";
+import { useLang } from "./i18n";
+import type { SrtSegment, TranscribeResult, TranslateResult, AnalyzeResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle, LicenseInfo, YtDownloadProgress, ManualClip } from "./types";
 import { DEFAULT_SUBTITLE_STYLE } from "./types";
 
 const WHISPER_LANGS = [
@@ -49,6 +50,7 @@ export default function App() {
 }
 
 function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
+  const { lang, setLang, t } = useLang();
   const [showLicenseInfo, setShowLicenseInfo] = useState(false);
   const [depsStatus, setDepsStatus] = useState<DepsStatus | null>(null);
   const [depsChecking, setDepsChecking] = useState(true);
@@ -105,6 +107,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [step, setStep] = useState<AppStep>("upload");
   const [videoPath, setVideoPath] = useState<string>("");
   const [segments, setSegments] = useState<SrtSegment[]>([]);
+  const [rawSegments, setRawSegments] = useState<SrtSegment[]>([]);
   const [srtContent, setSrtContent] = useState<string>("");
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [sections, setSections] = useState<Section[]>([]);
@@ -126,6 +129,11 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [transcribePreset, setTranscribePreset] = useState<string>("balanced");
   const [maxWordsPerSub, setMaxWordsPerSub] = useState<number>(0);
   const [translateTarget, setTranslateTarget] = useState<string>("id");
+  const [maxSectionSecs, setMaxSectionSecs] = useState<number>(60);
+  const [manualClips, setManualClips] = useState<ManualClip[]>([]);
+  const [verticalTitle, setVerticalTitle] = useState<string>("");
+  const [verticalTitleFontSize, setVerticalTitleFontSize] = useState<number>(48);
+  const [verticalTitleColor, setVerticalTitleColor] = useState<string>("#ffffff");
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingMsg, setLoadingMsg] = useState<string>("");
@@ -143,6 +151,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setVideoPath(path);
     setError("");
     setSegments([]);
+    setRawSegments([]);
     setSrtContent("");
     setSelectedIndices(new Set());
     setSections([]);
@@ -194,7 +203,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setCancelling(false);
     setStep("transcribing");
     setLoading(true);
-    setLoadingMsg("Mempersiapkan transkripsi...");
+    setLoadingMsg(t("transcribePrepare"));
     setTranscribeElapsed(0);
     setTranscribeDuration(0);
     transcribeStartRef.current = Date.now();
@@ -203,11 +212,11 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     const unlistenProgress = await listen<string>("transcribe-progress", event => {
       const line = event.payload;
       if (line.includes("mlx-whisper")) {
-        setLoadingMsg("Transkripsi dengan GPU (Apple Silicon)...");
+        setLoadingMsg(t("transcribeGPU"));
       } else if (line.includes("faster-whisper")) {
-        setLoadingMsg("Transkripsi dengan CPU...");
+        setLoadingMsg(t("transcribeCPU"));
       } else if (line.includes("Selesai")) {
-        setLoadingMsg("Memproses hasil...");
+        setLoadingMsg(t("transcribeFinish"));
       }
     });
 
@@ -220,6 +229,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       });
       unlistenProgress();
       setSegments(result.segments);
+      setRawSegments(result.raw_segments?.length > 0 ? result.raw_segments : result.segments);
       setSrtContent(result.srt_content);
       setDetectedLanguage(result.detected_language);
       setStep("transcript");
@@ -245,7 +255,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   async function handleTranslate() {
     if (segments.length === 0) return;
     setLoading(true);
-    setLoadingMsg(`Menerjemahkan transkrip ke ${TRANSLATE_LANGS.find(l => l.code === translateTarget)?.label ?? translateTarget}...`);
+    setLoadingMsg(t("translating", { lang: TRANSLATE_LANGS.find(l => l.code === translateTarget)?.label ?? translateTarget }));
     setError("");
 
     try {
@@ -269,7 +279,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   async function handleClassify() {
     if (segments.length === 0) return;
     setLoading(true);
-    setLoadingMsg("Mendeteksi struktur video...");
+    setLoadingMsg(t("classifyDetecting"));
     setError("");
     setSections([]);
     setSelectedIndices(new Set());
@@ -281,10 +291,12 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     try {
       const modelPath = selectedLlm?.source === "local" ? selectedLlm.path : "";
       const ollamaModel = selectedLlm?.source === "ollama" ? selectedLlm.ollama_model : "";
+      const classifySegs = rawSegments.length > 0 ? rawSegments : segments;
       const result = await invoke<ClassifyResult>("classify_transcript", {
-        segments,
+        segments: classifySegs,
         modelPath,
         ollamaModel,
+        maxSectionSecs: Math.max(20, maxSectionSecs),
       });
       setSections(result.sections);
     } catch (e) {
@@ -299,7 +311,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   async function handleAnalyze() {
     if (segments.length === 0) return;
     setLoading(true);
-    setLoadingMsg("AI sedang memilih segmen terpenting...");
+    setLoadingMsg(t("analyzeSelecting"));
     setError("");
     try {
       const modelPath = selectedLlm?.source === "local" ? selectedLlm.path : "";
@@ -356,9 +368,19 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setSelectedIndices(new Set());
   }
 
+  function addManualClip(startSec: number, endSec: number) {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const n = manualClips.length + 1;
+    setManualClips(prev => [...prev, { id, startSec, endSec, label: `Klip ${n}` }]);
+  }
+
+  function removeManualClip(id: string) {
+    setManualClips(prev => prev.filter(c => c.id !== id));
+  }
+
   async function handleClip() {
-    if (selectedIndices.size === 0) {
-      setError("Pilih minimal satu segmen untuk dijadikan clip");
+    if (selectedIndices.size === 0 && manualClips.length === 0) {
+      setError(t("clippingError"));
       return;
     }
 
@@ -375,33 +397,32 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setCancelling(false);
     setStep("clipping");
     setLoading(true);
-    setLoadingMsg(`Menggabungkan ${selectedIndices.size} segmen menjadi satu video...`);
+    const totalItems = selectedIndices.size + manualClips.length;
+    setLoadingMsg(t("clippingMerging", { n: totalItems }));
     setError("");
 
     const unlistenConcat = await listen<number>("clip-concat-percent", event => {
       const pct = event.payload;
-      if (pct < 100) {
-        setLoadingMsg(`Menggabungkan segmen... ${pct}%`);
-      }
+      if (pct < 100) setLoadingMsg(t("clippingConcat", { pct }));
     });
 
     const unlistenSmart = await listen<number>("clip-smart-percent", event => {
       const pct = event.payload;
       if (pct < 56) {
-        setLoadingMsg(`Mendeteksi wajah... ${Math.round(pct / 55 * 100)}%`);
+        setLoadingMsg(t("clippingFaces", { pct: Math.round(pct / 55 * 100) }));
       } else if (pct < 100) {
-        setLoadingMsg(`Menerapkan smart crop... ${Math.round((pct - 56) / 43 * 100)}%`);
+        setLoadingMsg(t("clippingSmartCrop", { pct: Math.round((pct - 56) / 43 * 100) }));
       } else {
-        setLoadingMsg("Menyelesaikan video...");
+        setLoadingMsg(t("clippingFinalizing"));
       }
     });
 
     const unlistenBurn = await listen<number>("clip-burn-percent", event => {
       const pct = event.payload;
       if (pct >= 100) {
-        setLoadingMsg("Menyelesaikan video...");
+        setLoadingMsg(t("clippingFinalizing"));
       } else {
-        setLoadingMsg(`Membakar subtitle ke video... ${pct}%`);
+        setLoadingMsg(t("clippingBurn", { pct }));
       }
     });
 
@@ -418,6 +439,10 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         fontSize: subtitleFontSize,
         fontPath: subtitleFont,
         subtitleStyleJson: JSON.stringify(subtitleStyle),
+        manualClips: manualClips.map(c => ({ start_sec: c.startSec, end_sec: c.endSec, label: c.label })),
+        verticalTitle,
+        verticalTitleFontSize,
+        verticalTitleColor,
       });
       setClipResult(result);
       setStep("done");
@@ -457,13 +482,15 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   }
 
   function handleReset() {
-    if (segments.length > 0 && !confirm("Reset semua progres? Transkrip dan pilihan segmen akan hilang.")) return;
+    if (segments.length > 0 && !confirm(t("resetConfirm"))) return;
     setStep("upload");
     setVideoPath("");
     setSegments([]);
+    setRawSegments([]);
     setSrtContent("");
     setSelectedIndices(new Set());
     setSections([]);
+    setManualClips([]);
     setClipResult(null);
     setError("");
     setSourceLanguage("");
@@ -476,7 +503,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       <div className="loading-overlay" style={{ position: "fixed" }}>
         <div className="loading-box">
           <div className="spinner" />
-          <p>Memeriksa dependensi...</p>
+          <p>{t("checkingDeps")}</p>
         </div>
       </div>
     );
@@ -500,42 +527,44 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             <span className="title-icon">✂</span>
             AutoClipper
           </h1>
-          <p className="app-subtitle">Clipping video otomatis berbasis AI</p>
+          <p className="app-subtitle">{t("appSubtitle")}</p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button
             className="btn btn-ghost btn-sm"
             onClick={() => setShowModelManager(true)}
-            title="Kelola model AI"
           >
-            🤖 Model AI
+            {t("btnModels")}
             {Object.keys(downloads).length > 0 && (
               <span className="dl-badge">{Object.keys(downloads).length}</span>
             )}
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setShowDeps(true)} title="Cek dependensi">
-            ⚙ Dependensi
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowDeps(true)}>
+            {t("btnDeps")}
           </button>
           {licenseInfo && licenseInfo.key !== "DEV-MODE" && (
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setShowLicenseInfo(true)}
-              title="Info lisensi"
-            >
-              🔑 Lisensi
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowLicenseInfo(true)}>
+              {t("btnLicense")}
             </button>
           )}
           {(step !== "upload") && (
             <button className="btn btn-ghost" onClick={handleReset}>
-              ↩ Mulai Ulang
+              {t("btnRestart")}
             </button>
           )}
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setLang(lang === "id" ? "en" : "id")}
+            title="Switch language"
+          >
+            {t("langToggle")}
+          </button>
         </div>
       </header>
 
       <div className="step-bar">
         {["upload", "transcript", "done"].map((s, i) => {
-          const labels = ["Upload Video", "Pilih Segmen", "Hasil Clip"];
+          const labels = [t("stepUpload"), t("stepTranscript"), t("stepDone")];
           const current = (step === "upload" || step === "ready") ? 0 : step === "transcribing" ? 0 : step === "clipping" ? 2 : ["upload", "transcript", "done"].indexOf(step);
           return (
             <div key={s} className={`step-item ${i <= current ? "active" : ""}`}>
@@ -566,8 +595,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
               )}
               {(step === "transcribing" || step === "clipping") && (
                 cancelling
-                  ? <p className="cancel-hint">Membatalkan...</p>
-                  : <button className="btn btn-cancel" onClick={handleCancel}>✕ Batalkan</button>
+                  ? <p className="cancel-hint">{t("cancelling")}</p>
+                  : <button className="btn btn-cancel" onClick={handleCancel}>{t("btnCancel")}</button>
               )}
             </div>
           </div>
@@ -605,13 +634,13 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
                   {videoPath.split("/").pop()}
                 </span>
                 <button className="btn btn-ghost btn-sm" onClick={() => setStep("upload")}>
-                  Ganti
+                  {t("btnChange")}
                 </button>
               </div>
 
               <div className="ready-options">
                 <div className="ready-lang-row">
-                  <label className="ready-lang-label">Bahasa sumber</label>
+                  <label className="ready-lang-label">{t("labelSourceLang")}</label>
                   <select
                     className="ready-lang-select"
                     value={sourceLanguage}
@@ -624,42 +653,42 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
                 </div>
 
                 <div className="ready-lang-row">
-                  <label className="ready-lang-label">Kecepatan</label>
+                  <label className="ready-lang-label">{t("labelSpeed")}</label>
                   <div className="preset-group">
                     {([
-                      { value: "fast",     label: "Cepat",    hint: "Model tiny — tercepat, akurasi rendah" },
-                      { value: "balanced", label: "Seimbang", hint: "Model base — kecepatan & akurasi seimbang (rekomendasi)" },
-                      { value: "accurate", label: "Akurat",   hint: "Model medium (1.5GB) — akurasi tinggi" },
-                      { value: "best",     label: "Terbaik",  hint: "Model large-v3-turbo (1.6GB) — akurasi terbaik, cocok untuk bahasa campuran" },
+                      { value: "fast",     labelKey: "presetFast",     hintKey: "presetFastHint"     },
+                      { value: "balanced", labelKey: "presetBalanced", hintKey: "presetBalancedHint" },
+                      { value: "accurate", labelKey: "presetAccurate", hintKey: "presetAccurateHint" },
+                      { value: "best",     labelKey: "presetBest",     hintKey: "presetBestHint"     },
                     ] as const).map(p => (
                       <button
                         key={p.value}
                         className={`preset-btn ${transcribePreset === p.value ? "active" : ""}`}
                         onClick={() => setTranscribePreset(p.value)}
-                        title={p.hint}
+                        title={t(p.hintKey)}
                       >
-                        {p.label}
+                        {t(p.labelKey)}
                       </button>
                     ))}
                   </div>
                 </div>
 
                 <div className="ready-lang-row">
-                  <label className="ready-lang-label">Kata per subtitle</label>
+                  <label className="ready-lang-label">{t("labelWordsPerSub")}</label>
                   <div className="preset-group">
                     {([
-                      { value: 0, label: "Auto",   hint: "Ikuti segmen asli Whisper" },
-                      { value: 2, label: "2 kata",  hint: "Maks 2 kata per subtitle — sangat cepat" },
-                      { value: 3, label: "3 kata",  hint: "Maks 3 kata per subtitle — rekomendasi untuk Reels/Shorts" },
-                      { value: 5, label: "5 kata",  hint: "Maks 5 kata per subtitle" },
+                      { value: 0, labelKey: "wordsAuto", hintKey: "wordsAutoHint" },
+                      { value: 2, labelKey: "words2",    hintKey: "words2Hint"    },
+                      { value: 3, labelKey: "words3",    hintKey: "words3Hint"    },
+                      { value: 5, labelKey: "words5",    hintKey: "words5Hint"    },
                     ] as const).map(p => (
                       <button
                         key={p.value}
                         className={`preset-btn ${maxWordsPerSub === p.value ? "active" : ""}`}
                         onClick={() => setMaxWordsPerSub(p.value)}
-                        title={p.hint}
+                        title={t(p.hintKey)}
                       >
-                        {p.label}
+                        {t(p.labelKey)}
                       </button>
                     ))}
                   </div>
@@ -670,7 +699,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
                 className="btn btn-primary ready-generate-btn"
                 onClick={startTranscription}
               >
-                🎙 Generate Transkrip
+                {t("btnGenerate")}
               </button>
             </div>
           </div>
@@ -717,6 +746,17 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             selectedLlm={selectedLlm}
             onLlmChange={setSelectedLlm}
             onManageModels={() => setShowModelManager(true)}
+            maxSectionSecs={maxSectionSecs}
+            onMaxSectionSecsChange={setMaxSectionSecs}
+            manualClips={manualClips}
+            onAddManualClip={addManualClip}
+            onRemoveManualClip={removeManualClip}
+            verticalTitle={verticalTitle}
+            verticalTitleFontSize={verticalTitleFontSize}
+            verticalTitleColor={verticalTitleColor}
+            onVerticalTitleChange={setVerticalTitle}
+            onVerticalTitleFontSizeChange={setVerticalTitleFontSize}
+            onVerticalTitleColorChange={setVerticalTitleColor}
           />
         )}
 
@@ -743,35 +783,35 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       {showLicenseInfo && licenseInfo && (
         <div className="modal-overlay" onClick={() => setShowLicenseInfo(false)}>
           <div className="modal-box license-info-modal" onClick={(e) => e.stopPropagation()}>
-            <h3 className="modal-title">Informasi Lisensi</h3>
+            <h3 className="modal-title">{t("licenseTitle")}</h3>
             <div className="license-info-rows">
               <div className="license-info-row">
-                <span className="license-info-label">Produk</span>
+                <span className="license-info-label">{t("licenseProduct")}</span>
                 <span className="license-info-value">{licenseInfo.product_name}</span>
               </div>
               {licenseInfo.customer_name && (
                 <div className="license-info-row">
-                  <span className="license-info-label">Nama</span>
+                  <span className="license-info-label">{t("licenseName")}</span>
                   <span className="license-info-value">{licenseInfo.customer_name}</span>
                 </div>
               )}
               {licenseInfo.customer_email && (
                 <div className="license-info-row">
-                  <span className="license-info-label">Email</span>
+                  <span className="license-info-label">{t("licenseEmail")}</span>
                   <span className="license-info-value">{licenseInfo.customer_email}</span>
                 </div>
               )}
               <div className="license-info-row">
-                <span className="license-info-label">Key</span>
+                <span className="license-info-label">{t("licenseKey")}</span>
                 <span className="license-info-value license-key-display">{licenseInfo.key}</span>
               </div>
             </div>
             <div className="license-info-actions">
-              <button className="btn btn-ghost" onClick={() => setShowLicenseInfo(false)}>Tutup</button>
+              <button className="btn btn-ghost" onClick={() => setShowLicenseInfo(false)}>{t("btnClose")}</button>
               <button
                 className="btn btn-danger"
                 onClick={async () => {
-                  if (!confirm("Nonaktifkan lisensi di perangkat ini? Anda bisa mengaktifkannya kembali di perangkat lain.")) return;
+                  if (!confirm(t("licenseDeactivateConfirm"))) return;
                   try {
                     await invoke("deactivate_license");
                     window.location.reload();
@@ -780,7 +820,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
                   }
                 }}
               >
-                Nonaktifkan Lisensi
+                {t("btnDeactivate")}
               </button>
             </div>
           </div>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { SrtSegment, Section, FontInfo, LlmModel, SubtitleStyle } from "../types";
+import { useLang } from "../i18n";
+import type { SrtSegment, Section, FontInfo, LlmModel, SubtitleStyle, ManualClip } from "../types";
 
 function hexToRgb(hex: string): string {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -10,11 +11,12 @@ function hexToRgb(hex: string): string {
 }
 
 const ASPECT_RATIOS = [
-  { value: "original", label: "Original", w: 16, h: 9,  desc: "Asli"          },
-  { value: "16:9",     label: "16:9",     w: 16, h: 9,  desc: "Landscape"     },
-  { value: "9:16",     label: "9:16",     w: 9,  h: 16, desc: "Shorts/Reels"  },
-  { value: "1:1",      label: "1:1",      w: 1,  h: 1,  desc: "Square"        },
-  { value: "4:5",      label: "4:5",      w: 4,  h: 5,  desc: "Instagram"     },
+  { value: "original",  label: "Original", w: 16, h: 9,  desc: "Asli"          },
+  { value: "16:9",      label: "16:9",     w: 16, h: 9,  desc: "Landscape"     },
+  { value: "9:16",      label: "9:16",     w: 9,  h: 16, desc: "Crop"          },
+  { value: "9:16-fit",  label: "9:16 ↕",  w: 9,  h: 16, desc: "Fit Tengah"    },
+  { value: "1:1",       label: "1:1",      w: 1,  h: 1,  desc: "Square"        },
+  { value: "4:5",       label: "4:5",      w: 4,  h: 5,  desc: "Instagram"     },
 ] as const;
 
 interface Props {
@@ -57,6 +59,41 @@ interface Props {
   onLlmChange: (m: LlmModel) => void;
   onManageModels: () => void;
   transcribeDuration?: number;
+  maxSectionSecs: number;
+  onMaxSectionSecsChange: (v: number) => void;
+  manualClips: ManualClip[];
+  onAddManualClip: (startSec: number, endSec: number) => void;
+  onRemoveManualClip: (id: string) => void;
+  verticalTitle: string;
+  verticalTitleFontSize: number;
+  verticalTitleColor: string;
+  onVerticalTitleChange: (v: string) => void;
+  onVerticalTitleFontSizeChange: (v: number) => void;
+  onVerticalTitleColorChange: (v: string) => void;
+}
+
+function parseTimestamp(ts: string): number | null {
+  const parts = ts.trim().split(':').map(Number);
+  if (parts.some(isNaN)) return null;
+  if (parts.length === 2) {
+    const [m, s] = parts;
+    if (s >= 60) return null;
+    return m * 60 + s;
+  }
+  if (parts.length === 3) {
+    const [h, m, s] = parts;
+    if (m >= 60 || s >= 60) return null;
+    return h * 3600 + m * 60 + s;
+  }
+  return null;
+}
+
+function fmtTs(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 function sectionStatus(section: Section, segments: SrtSegment[], selectedIndices: Set<number>) {
@@ -114,13 +151,29 @@ export default function TranscriptView({
   onLlmChange,
   onManageModels,
   transcribeDuration = 0,
+  maxSectionSecs,
+  onMaxSectionSecsChange,
+  manualClips,
+  onAddManualClip,
+  onRemoveManualClip,
+  verticalTitle,
+  verticalTitleFontSize,
+  verticalTitleColor,
+  onVerticalTitleChange,
+  onVerticalTitleFontSizeChange,
+  onVerticalTitleColorChange,
 }: Props) {
+  const { t } = useLang();
   const [searchText, setSearchText] = useState("");
   const [showSrt, setShowSrt] = useState(false);
   const [previewReady, setPreviewReady] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editingText, setEditingText] = useState("");
   const fontStyleRef = useRef<HTMLStyleElement | null>(null);
+  const [mcStart, setMcStart] = useState("");
+  const [mcEnd, setMcEnd] = useState("");
+  const [mcError, setMcError] = useState("");
+  const mcEndRef = useRef<HTMLInputElement>(null);
 
   function startEdit(seg: SrtSegment, e: React.MouseEvent) {
     e.stopPropagation();
@@ -162,7 +215,7 @@ export default function TranscriptView({
       <p
         className="segment-text"
         onDoubleClick={e => startEdit(seg, e)}
-        title="Klik dua kali untuk edit teks"
+        title={t("segmentEditHint")}
       >
         {seg.text}
       </p>
@@ -228,24 +281,24 @@ export default function TranscriptView({
 
         {/* File & stats */}
         <div className="sidebar-block">
-          <p className="sidebar-label">File Video</p>
+          <p className="sidebar-label">{t("sidebarFile")}</p>
           <p className="sidebar-value" title={videoPath}>{videoName}</p>
         </div>
 
         <div className="sidebar-block sidebar-stats-row">
           <div>
-            <p className="sidebar-label">Segmen</p>
+            <p className="sidebar-label">{t("sidebarSegments")}</p>
             <p className="sidebar-value">{segments.length}</p>
           </div>
           <div className="sidebar-stats-right">
-            <p className="sidebar-label">Dipilih</p>
+            <p className="sidebar-label">{t("sidebarSelected")}</p>
             <p className="sidebar-value selected-count">{selectedIndices.size}</p>
           </div>
         </div>
 
         {transcribeDuration > 0 && (
           <div className="sidebar-block transcribe-duration-block">
-            <p className="sidebar-label">Waktu transkripsi</p>
+            <p className="sidebar-label">{t("sidebarTranscribeTime")}</p>
             <p className="transcribe-duration-value">
               {String(Math.floor(transcribeDuration / 60)).padStart(2, "0")}:{String(transcribeDuration % 60).padStart(2, "0")}
             </p>
@@ -257,20 +310,20 @@ export default function TranscriptView({
           <div className="llm-select-section">
             <div className="llm-select-header">
               <p className="sidebar-label" style={{ margin: 0 }}>
-                Model AI
+                {t("sidebarAIModel")}
                 {selectedLlm && (
                   <span className={`llm-source-badge ${selectedLlm.source}`}>
-                    {selectedLlm.source === "local" ? "Lokal" : "Ollama"}
+                    {selectedLlm.source === "local" ? t("badgeLocal") : t("badgeOllama")}
                   </span>
                 )}
               </p>
-              <button className="llm-manage-btn" onClick={onManageModels} title="Unduh / kelola model">
-                + Kelola
+              <button className="llm-manage-btn" onClick={onManageModels}>
+                {t("btnManage")}
               </button>
             </div>
             {llmModels.length === 0 ? (
               <button className="llm-empty-btn" onClick={onManageModels}>
-                ⬇ Unduh model AI...
+                {t("btnDownloadModel")}
               </button>
             ) : (
               <select
@@ -301,37 +354,117 @@ export default function TranscriptView({
         {/* Actions */}
         <div className="sidebar-block">
           <div className="sidebar-actions">
+            <div className="classify-options-row">
+              <label className="classify-options-label">{t("labelMaxDuration")}</label>
+              <div className="classify-options-input-row">
+                <input
+                  type="number"
+                  className="classify-duration-input"
+                  min={20}
+                  max={600}
+                  step={5}
+                  value={maxSectionSecs}
+                  onChange={e => onMaxSectionSecsChange(Math.max(20, Number(e.target.value)))}
+                  disabled={loading}
+                />
+                <span className="classify-options-unit">{t("labelSeconds")}</span>
+              </div>
+            </div>
             <button
               className="btn btn-primary w-full"
               onClick={onClassify}
               disabled={loading || llmModels.length === 0}
             >
-              🗂 Klasifikasi Bagian
+              {t("btnClassify")}
             </button>
             {hasSections && (
-              <p className="classify-sections-count">{sections.length} bagian ditemukan</p>
+              <p className="classify-sections-count">{t("classifySectionsFound", { n: sections.length })}</p>
             )}
             <button
               className="btn btn-secondary w-full"
               onClick={onAnalyze}
               disabled={loading || llmModels.length === 0}
-              title="AI memilih segmen-segmen paling penting secara otomatis"
             >
-              ✨ Pilih Segmen Penting
+              {t("btnAnalyze")}
             </button>
             <div className="sidebar-actions-row">
-              <button className="btn btn-secondary" onClick={onSelectAll}>✓ Pilih Semua</button>
-              <button className="btn btn-ghost" onClick={onClearAll}>✕ Hapus</button>
+              <button className="btn btn-secondary" onClick={onSelectAll}>{t("btnSelectAll")}</button>
+              <button className="btn btn-ghost" onClick={onClearAll}>{t("btnClearAll")}</button>
             </div>
-            <button className="btn btn-ghost w-full" onClick={onSaveSrt}>💾 Simpan SRT</button>
+            <button className="btn btn-ghost w-full" onClick={onSaveSrt}>{t("btnSaveSrt")}</button>
           </div>
+        </div>
+
+        {/* Manual Clips */}
+        <div className="sidebar-block">
+          <p className="sidebar-label">{t("manualClipTitle")}</p>
+          <div className="mc-form">
+            <div className="mc-form-row">
+              <input
+                type="text"
+                className="mc-ts-input"
+                placeholder="0:00"
+                value={mcStart}
+                onChange={e => { setMcStart(e.target.value); setMcError(""); }}
+                onKeyDown={e => { if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); mcEndRef.current?.focus(); } }}
+                disabled={loading}
+              />
+              <span className="mc-arrow">→</span>
+              <input
+                ref={mcEndRef}
+                type="text"
+                className="mc-ts-input"
+                placeholder="0:20"
+                value={mcEnd}
+                onChange={e => { setMcEnd(e.target.value); setMcError(""); }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    const s = parseTimestamp(mcStart);
+                    const en = parseTimestamp(mcEnd);
+                    if (s === null || en === null) { setMcError(t("mcErrorFormat")); return; }
+                    if (en <= s) { setMcError(t("mcErrorEnd")); return; }
+                    onAddManualClip(s, en);
+                    setMcStart(""); setMcEnd(""); setMcError("");
+                  }
+                }}
+                disabled={loading}
+              />
+              <button
+                className="btn btn-secondary mc-add-btn"
+                disabled={loading}
+                onClick={() => {
+                  const s = parseTimestamp(mcStart);
+                  const en = parseTimestamp(mcEnd);
+                  if (s === null || en === null) { setMcError(t("mcErrorFormat")); return; }
+                  if (en <= s) { setMcError(t("mcErrorEnd")); return; }
+                  onAddManualClip(s, en);
+                  setMcStart(""); setMcEnd(""); setMcError("");
+                }}
+              >+</button>
+            </div>
+            {mcError && <p className="mc-error">{mcError}</p>}
+          </div>
+          {manualClips.length > 0 && (
+            <ul className="mc-list">
+              {manualClips.map(clip => (
+                <li key={clip.id} className="mc-item">
+                  <span className="mc-range">{fmtTs(clip.startSec)} → {fmtTs(clip.endSec)}</span>
+                  <span className="mc-dur">({Math.round(clip.endSec - clip.startSec)}s)</span>
+                  <button className="mc-remove" onClick={() => onRemoveManualClip(clip.id)}>✕</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {manualClips.length === 0 && (
+            <p className="mc-hint">{t("mcHint")}</p>
+          )}
         </div>
 
         {/* Translate */}
         <div className="sidebar-block">
           <div className="translate-section">
             <p className="sidebar-label">
-              Terjemahan
+              {t("sidebarTranslate")}
               {detectedLanguage && (
                 <span className="detected-lang-badge">{detectedLanguage.toUpperCase()}</span>
               )}
@@ -354,7 +487,7 @@ export default function TranscriptView({
                 onClick={onTranslate}
                 disabled={loading || segments.length === 0}
               >
-                ⇄ Terjemahkan
+                {t("btnTranslate")}
               </button>
             </div>
           </div>
@@ -362,7 +495,7 @@ export default function TranscriptView({
 
         {/* Aspect Ratio */}
         <div className="sidebar-block">
-          <p className="sidebar-label">Aspect Ratio</p>
+          <p className="sidebar-label">{t("sidebarAspect")}</p>
           <div className="ar-grid">
             {ASPECT_RATIOS.map(ar => {
               const scale = 32 / Math.max(ar.w, ar.h);
@@ -384,6 +517,50 @@ export default function TranscriptView({
           </div>
         </div>
 
+        {/* Vertical Title — only for 9:16-fit */}
+        {aspectRatio === "9:16-fit" && (
+          <div className="sidebar-block vertical-title-block">
+            <p className="sidebar-label">{t("verticalTitleSection")}</p>
+            <p className="sidebar-hint">{t("verticalTitleHint")}</p>
+            <input
+              className="vertical-title-input"
+              type="text"
+              placeholder={t("verticalTitlePlaceholder")}
+              value={verticalTitle}
+              onChange={e => onVerticalTitleChange(e.target.value)}
+            />
+            {verticalTitle.trim().length > 0 && (
+              <>
+                <div className="subtitle-setting-row" style={{ marginTop: 8 }}>
+                  <span className="sidebar-label">{t("verticalTitleFontSize")}</span>
+                  <span className="font-size-badge">{verticalTitleFontSize}px</span>
+                </div>
+                <div className="font-size-slider-row">
+                  <span className="font-size-hint">A</span>
+                  <input
+                    type="range"
+                    className="font-size-slider"
+                    min={24} max={96} step={4}
+                    value={verticalTitleFontSize}
+                    onChange={e => onVerticalTitleFontSizeChange(Number(e.target.value))}
+                  />
+                  <span className="font-size-hint large">A</span>
+                </div>
+                <div className="style-colors-row" style={{ marginTop: 6 }}>
+                  <label className="style-color-label">
+                    <span>{t("verticalTitleColor")}</span>
+                    <input
+                      type="color"
+                      value={verticalTitleColor}
+                      onChange={e => onVerticalTitleColorChange(e.target.value)}
+                    />
+                  </label>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Smart Crop — only visible when aspect ratio is not original */}
         {aspectRatio !== "original" && (
           <div className="sidebar-block smart-crop-block">
@@ -395,31 +572,31 @@ export default function TranscriptView({
               />
               <span className="smart-crop-label">
                 <span className="smart-crop-icon">🎯</span>
-                Smart Crop
-                <span className="smart-crop-hint">Ikuti pembicara</span>
+                {t("smartCropLabel")}
+                <span className="smart-crop-hint">{t("smartCropHint")}</span>
               </span>
             </label>
             {smartCrop && (
               <>
                 <div className="smart-crop-transition">
                   {([
-                    { value: "smooth",     label: "Halus",   hint: "Kamera bergerak perlahan mengikuti wajah" },
-                    { value: "aggressive", label: "Agresif", hint: "Langsung snap ke wajah baru, seperti hard cut" },
+                    { value: "smooth",     labelKey: "smartCropSmooth",     hintKey: "smartCropSmoothHint"     },
+                    { value: "aggressive", labelKey: "smartCropAggressive", hintKey: "smartCropAggressiveHint" },
                   ] as const).map(opt => (
                     <button
                       key={opt.value}
                       className={`transition-btn ${smartCropTransition === opt.value ? "active" : ""}`}
                       onClick={() => onSmartCropTransitionChange(opt.value)}
-                      title={opt.hint}
+                      title={t(opt.hintKey)}
                     >
-                      {opt.label}
+                      {t(opt.labelKey)}
                     </button>
                   ))}
                 </div>
                 <p className="smart-crop-note">
                   {smartCropTransition === "aggressive"
-                    ? "Snap langsung · cocok untuk talk show / debat"
-                    : "Pan sinematik · cocok untuk konten solo"
+                    ? t("smartCropNoteAggressive")
+                    : t("smartCropNoteSmooth")
                   }
                 </p>
               </>
@@ -437,15 +614,15 @@ export default function TranscriptView({
             />
             <span className="subtitle-toggle-label">
               <span className="subtitle-toggle-icon">CC</span>
-              Bakar Subtitle
+              {t("subtitleBurn")}
             </span>
           </label>
           {burnSubtitles && (
             <div className="subtitle-settings">
               <div className="subtitle-setting-row">
-                <span className="sidebar-label">Ukuran Teks</span>
+                <span className="sidebar-label">{t("subtitleFontSize")}</span>
                 <span className="font-size-badge">
-                  {subtitleFontSize === 0 ? "Auto" : `${subtitleFontSize}px`}
+                  {subtitleFontSize === 0 ? t("wordsAuto") : `${subtitleFontSize}px`}
                 </span>
               </div>
               <div className="font-size-slider-row">
@@ -459,16 +636,16 @@ export default function TranscriptView({
                 />
                 <span className="font-size-hint large">A</span>
                 {subtitleFontSize > 0 && (
-                  <button className="font-reset-btn" onClick={() => onSubtitleFontSizeChange(0)} title="Reset ke Auto">↺</button>
+                  <button className="font-reset-btn" onClick={() => onSubtitleFontSizeChange(0)}>↺</button>
                 )}
               </div>
-              <span className="sidebar-label" style={{ marginTop: 8, display: "block" }}>Font</span>
+              <span className="sidebar-label" style={{ marginTop: 8, display: "block" }}>{t("subtitleFont")}</span>
               <select
                 className="font-select"
                 value={subtitleFont}
                 onChange={e => onSubtitleFontChange(e.target.value)}
               >
-                <option value="">Default (otomatis)</option>
+                <option value="">{t("subtitleFontDefault")}</option>
                 {systemFonts.map(f => (
                   <option key={f.path} value={f.path}>{f.name}</option>
                 ))}
@@ -491,18 +668,17 @@ export default function TranscriptView({
                   alignItems: "center",
                 }}
               >
-                {subtitleStyle.allCaps ? "TEKS SUBTITLE CONTOH" : "Teks Subtitle Contoh"}
+                {subtitleStyle.allCaps ? t("subtitlePreviewTextCaps") : t("subtitlePreviewText")}
                 {!previewReady && subtitleFont && (
-                  <span className="font-preview-loading">memuat...</span>
+                  <span className="font-preview-loading">{t("subtitleFontLoading")}</span>
                 )}
               </div>
 
               {/* ── Style controls ── */}
               <div className="subtitle-style-section">
-                {/* Colors row */}
                 <div className="style-colors-row">
                   <label className="style-color-label">
-                    <span>Teks</span>
+                    <span>{t("subtitleColorText")}</span>
                     <input
                       type="color"
                       value={subtitleStyle.textColor}
@@ -510,7 +686,7 @@ export default function TranscriptView({
                     />
                   </label>
                   <label className="style-color-label">
-                    <span>Outline</span>
+                    <span>{t("subtitleColorOutline")}</span>
                     <input
                       type="color"
                       value={subtitleStyle.outlineColor}
@@ -519,9 +695,8 @@ export default function TranscriptView({
                   </label>
                 </div>
 
-                {/* Outline width */}
                 <div className="style-row">
-                  <span className="sidebar-label" style={{ flex: 1 }}>Tebal Outline</span>
+                  <span className="sidebar-label" style={{ flex: 1 }}>{t("subtitleOutlineWidth")}</span>
                   <span className="font-size-badge">{subtitleStyle.outlineWidth}px</span>
                 </div>
                 <input
@@ -532,8 +707,7 @@ export default function TranscriptView({
                   onChange={e => onSubtitleStyleChange({ ...subtitleStyle, outlineWidth: Number(e.target.value) })}
                 />
 
-                {/* Position */}
-                <span className="sidebar-label" style={{ display: "block", marginTop: 6 }}>Posisi</span>
+                <span className="sidebar-label" style={{ display: "block", marginTop: 6 }}>{t("subtitlePosition")}</span>
                 <div className="style-position-row">
                   {(["top", "center", "bottom"] as const).map(pos => (
                     <button
@@ -541,34 +715,32 @@ export default function TranscriptView({
                       className={`style-pos-btn ${subtitleStyle.position === pos ? "active" : ""}`}
                       onClick={() => onSubtitleStyleChange({ ...subtitleStyle, position: pos })}
                     >
-                      {pos === "top" ? "Atas" : pos === "center" ? "Tengah" : "Bawah"}
+                      {pos === "top" ? t("subtitlePosTop") : pos === "center" ? t("subtitlePosCenter") : t("subtitlePosBottom")}
                     </button>
                   ))}
                 </div>
 
-                {/* All caps */}
                 <label className="style-box-toggle">
                   <input
                     type="checkbox"
                     checked={subtitleStyle.allCaps}
                     onChange={e => onSubtitleStyleChange({ ...subtitleStyle, allCaps: e.target.checked })}
                   />
-                  <span>HURUF KAPITAL SEMUA</span>
+                  <span>{t("subtitleAllCaps")}</span>
                 </label>
 
-                {/* Background box */}
                 <label className="style-box-toggle">
                   <input
                     type="checkbox"
                     checked={subtitleStyle.boxEnabled}
                     onChange={e => onSubtitleStyleChange({ ...subtitleStyle, boxEnabled: e.target.checked })}
                   />
-                  <span>Background Box</span>
+                  <span>{t("subtitleBgBox")}</span>
                 </label>
                 {subtitleStyle.boxEnabled && (
                   <div className="style-box-settings">
                     <label className="style-color-label">
-                      <span>Warna</span>
+                      <span>{t("subtitleBgColor")}</span>
                       <input
                         type="color"
                         value={subtitleStyle.boxColor}
@@ -597,11 +769,16 @@ export default function TranscriptView({
           <button
             className="btn btn-clip w-full"
             onClick={onClip}
-            disabled={selectedIndices.size === 0 || loading}
+            disabled={selectedIndices.size === 0 && manualClips.length === 0 || loading}
           >
-            <span>✂ Buat Klip</span>
-            {selectedIndices.size > 0 && (
-              <span className="btn-clip-count">{selectedIndices.size} segmen</span>
+            <span>{t("btnClip")}</span>
+            {(selectedIndices.size > 0 || manualClips.length > 0) && (
+              <span className="btn-clip-count">
+                {[
+                  selectedIndices.size > 0 ? t("clipCountSegments", { n: selectedIndices.size }) : "",
+                  manualClips.length > 0 ? t("clipCountManual", { n: manualClips.length }) : "",
+                ].filter(Boolean).join(" + ")}
+              </span>
             )}
           </button>
         </div>
@@ -614,12 +791,12 @@ export default function TranscriptView({
           <input
             className="search-input"
             type="text"
-            placeholder="Cari teks..."
+            placeholder={t("searchPlaceholder")}
             value={searchText}
             onChange={e => setSearchText(e.target.value)}
           />
           <button className="btn btn-ghost btn-sm" onClick={() => setShowSrt(!showSrt)}>
-            {showSrt ? "Tampilan Kartu" : "Tampilan SRT"}
+            {showSrt ? t("btnCardView") : t("btnSrtView")}
           </button>
         </div>
 
@@ -646,7 +823,7 @@ export default function TranscriptView({
                         <span className="section-num">{sIdx + 1}</span>
                         <span className="section-name">{section.name}</span>
                         <span className="section-time">{sectionTimeRange(section)}</span>
-                        <span className="section-count">{segs.length} segmen</span>
+                        <span className="section-count">{t("sectionSegments", { n: segs.length })}</span>
                       </div>
                       <div className="section-summary">{section.summary}</div>
                     </div>
@@ -697,13 +874,13 @@ export default function TranscriptView({
 
               {flatFiltered.length === 0 && (
                 <div className="empty-state">
-                  <p>Tidak ada segmen yang cocok dengan pencarian</p>
+                  <p>{t("noResults")}</p>
                 </div>
               )}
 
               {!hasSections && segments.length > 0 && !searchText && (
                 <div className="classify-hint">
-                  <p>Klik <strong>Klasifikasi Bagian</strong> agar AI mengelompokkan segmen berdasarkan topik — lalu pilih bagian yang ingin dijadikan video.</p>
+                  <p dangerouslySetInnerHTML={{ __html: t("classifyHint") }} />
                 </div>
               )}
             </>

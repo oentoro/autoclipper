@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useLang } from "../i18n";
 import type { YtDownloadProgress } from "../types";
 
 interface Props {
@@ -19,6 +20,7 @@ export default function VideoUpload({
   youtubeDownloading = false,
   youtubeProgress = null,
 }: Props) {
+  const { t } = useLang();
   const [dragOver, setDragOver] = useState(false);
   const [tab, setTab] = useState<"local" | "youtube">("local");
   const [ytUrl, setYtUrl] = useState("");
@@ -47,30 +49,29 @@ export default function VideoUpload({
   }
 
   const phaseLabel = youtubeProgress?.phase === "merging"
-    ? "Menggabungkan audio & video..."
+    ? t("ytMerging")
     : youtubeProgress?.phase === "done"
-    ? "Selesai!"
+    ? t("ytDone")
     : youtubeProgress
     ? `${youtubeProgress.percent.toFixed(1)}%${youtubeProgress.speed ? `  ·  ${youtubeProgress.speed}` : ""}${youtubeProgress.eta && youtubeProgress.eta !== "Unknown" ? `  ·  ETA ${youtubeProgress.eta}` : ""}`
-    : "Memulai download...";
+    : t("ytStarting");
 
   return (
     <div className="upload-container">
-      {/* Source tab switcher */}
       <div className="upload-tabs">
         <button
           className={`upload-tab ${tab === "local" ? "active" : ""}`}
           onClick={() => setTab("local")}
           disabled={disabled || youtubeDownloading}
         >
-          📁 File Lokal
+          {t("tabLocal")}
         </button>
         <button
           className={`upload-tab ${tab === "youtube" ? "active" : ""}`}
           onClick={() => setTab("youtube")}
           disabled={disabled}
         >
-          ▶ YouTube
+          {t("tabYoutube")}
         </button>
       </div>
 
@@ -85,14 +86,14 @@ export default function VideoUpload({
           <div className="upload-icon">🎬</div>
           {disabled ? (
             <>
-              <p className="upload-title">Memproses video...</p>
-              <p className="upload-sub">Sedang mentranskripsi audio</p>
+              <p className="upload-title">{t("uploadProcessing")}</p>
+              <p className="upload-sub">{t("uploadTranscribing")}</p>
             </>
           ) : (
             <>
-              <p className="upload-title">Drag & drop video atau klik untuk browse</p>
-              <p className="upload-sub">Format: MP4, MKV, AVI, MOV, WebM, FLV</p>
-              <button className="btn btn-primary upload-btn">Pilih Video</button>
+              <p className="upload-title">{t("uploadTitle")}</p>
+              <p className="upload-sub">{t("uploadSub")}</p>
+              <button className="btn btn-primary upload-btn">{t("btnSelectVideo")}</button>
             </>
           )}
         </div>
@@ -108,11 +109,11 @@ export default function VideoUpload({
                   style={{ width: `${youtubeProgress?.phase === "merging" ? 100 : (youtubeProgress?.percent ?? 0)}%` }}
                 />
               </div>
-              <button className="btn btn-cancel" onClick={onCancelYoutube}>✕ Batalkan</button>
+              <button className="btn btn-cancel" onClick={onCancelYoutube}>{t("btnCancel")}</button>
             </div>
           ) : (
             <>
-              <p className="yt-hint">Paste link video YouTube</p>
+              <p className="yt-hint">{t("ytHint")}</p>
               <div className="yt-input-row">
                 <input
                   className="yt-input"
@@ -128,10 +129,10 @@ export default function VideoUpload({
                   onClick={handleYtDownload}
                   disabled={disabled || !ytUrl.trim()}
                 >
-                  ⬇ Download
+                  {t("btnYtDownload")}
                 </button>
               </div>
-              <p className="yt-req">Video disimpan ke folder <code>Downloads</code> · Diperlukan: <code>yt-dlp</code> (<code>pip install yt-dlp</code>)</p>
+              <p className="yt-req" dangerouslySetInnerHTML={{ __html: t("ytReq") }} />
             </>
           )}
         </div>
@@ -140,21 +141,18 @@ export default function VideoUpload({
       <div className="feature-grid">
         <div className="feature-card">
           <span className="feature-icon">🎙</span>
-          <h3>Transkripsi Otomatis</h3>
-          <p>Ubah audio menjadi teks secara akurat</p>
-          <span className="feature-badge">Whisper</span>
+          <h3>{t("feat1Title")}</h3>
+          <p>{t("feat1Desc")}</p>
         </div>
         <div className="feature-card">
           <span className="feature-icon">🤖</span>
-          <h3>Analisis AI</h3>
-          <p>Pilih segmen terpenting dari konten secara otomatis</p>
-          <span className="feature-badge">Gemma3</span>
+          <h3>{t("feat2Title")}</h3>
+          <p>{t("feat2Desc")}</p>
         </div>
         <div className="feature-card">
           <span className="feature-icon">✂</span>
-          <h3>Penggabungan Video</h3>
-          <p>Gabungkan segmen pilihan menjadi satu video</p>
-          <span className="feature-badge">FFmpeg</span>
+          <h3>{t("feat3Title")}</h3>
+          <p>{t("feat3Desc")}</p>
         </div>
       </div>
     </div>

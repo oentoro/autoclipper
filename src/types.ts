@@ -11,6 +11,7 @@ export interface TranscribeResult {
   segments: SrtSegment[];
   srt_content: string;
   detected_language: string;
+  raw_segments: SrtSegment[];
 }
 
 export interface TranslateResult {
@@ -93,6 +94,13 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   position: "bottom",
   allCaps: false,
 };
+
+export interface ManualClip {
+  id: string;
+  startSec: number;
+  endSec: number;
+  label: string;
+}
 
 export interface LicenseInfo {
   key: string;

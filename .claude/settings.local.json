@@ -41,7 +41,8 @@
       "Bash(kill 842)",
       "Bash(VITE_PORT=1421 rtk npm run tauri dev)",
       "Bash(kill 1361)",
-      "Bash(screencapture -x /tmp/autoclipper-screen.png)"
+      "Bash(screencapture -x /tmp/autoclipper-screen.png)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

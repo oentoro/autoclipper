@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { useLang } from "../i18n";
 import type { ClipResult } from "../types";
 
 interface Props {
@@ -8,6 +9,8 @@ interface Props {
 }
 
 export default function ClipResults({ result, loading, onBack }: Props) {
+  const { t } = useLang();
+
   function openInFinder(path: string) {
     invoke("reveal_in_file_manager", { path });
   }
@@ -22,8 +25,8 @@ export default function ClipResults({ result, loading, onBack }: Props) {
     return (
       <div className="results-container centered">
         <div className="spinner large" />
-        <p className="loading-text">Sedang menggabungkan segmen video...</p>
-        <p className="loading-sub">Ini mungkin memakan beberapa saat tergantung panjang video</p>
+        <p className="loading-text">{t("clippingLoading")}</p>
+        <p className="loading-sub">{t("clippingLoadingSub")}</p>
       </div>
     );
   }
@@ -31,8 +34,8 @@ export default function ClipResults({ result, loading, onBack }: Props) {
   if (!result) {
     return (
       <div className="results-container centered">
-        <p>Belum ada hasil</p>
-        <button className="btn btn-secondary" onClick={onBack}>← Kembali</button>
+        <p>{t("noResults2")}</p>
+        <button className="btn btn-secondary" onClick={onBack}>{t("btnBack")}</button>
       </div>
     );
   }
@@ -43,18 +46,18 @@ export default function ClipResults({ result, loading, onBack }: Props) {
     <div className="results-container">
       <div className="result-hero">
         <div className="result-hero-icon">🎬</div>
-        <h2 className="result-hero-title">Video Berhasil Dibuat!</h2>
+        <h2 className="result-hero-title">{t("resultTitle")}</h2>
         <p className="result-hero-sub">{result.message}</p>
       </div>
 
       <div className="result-stats">
         <div className="stat-card">
           <span className="stat-value">{result.total_segments}</span>
-          <span className="stat-label">Segmen digabung</span>
+          <span className="stat-label">{t("statSegments")}</span>
         </div>
         <div className="stat-card">
           <span className="stat-value">{formatDuration(result.duration_secs)}</span>
-          <span className="stat-label">Durasi total</span>
+          <span className="stat-label">{t("statDuration")}</span>
         </div>
       </div>
 
@@ -68,13 +71,13 @@ export default function ClipResults({ result, loading, onBack }: Props) {
           className="btn btn-primary"
           onClick={() => openInFinder(result.output_path)}
         >
-          Buka di Finder
+          {t("btnOpenFinder")}
         </button>
       </div>
 
       <div className="results-actions">
         <button className="btn btn-secondary" onClick={onBack}>
-          ← Kembali ke Transkrip
+          {t("btnBackTranscript")}
         </button>
       </div>
     </div>

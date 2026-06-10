@@ -380,16 +380,21 @@ def transcribe(video_path: str, model_dir: str | None = None,
             )
             segs_wrapped = [_Seg(s) for s in segs_raw]
 
-        raw_chunks = []
+        sentence_chunks = []
+        word_chunks     = []
         for seg in segs_wrapped:
             if not seg.text.strip():
                 continue
+            sentence_chunks.append({"text": seg.text.strip(), "start": seg.start, "end": seg.end})
             if need_words:
-                raw_chunks.extend(split_segment_by_words(seg, max_words))
-            else:
-                raw_chunks.append({"text": seg.text.strip(), "start": seg.start, "end": seg.end})
+                word_chunks.extend(split_segment_by_words(seg, max_words))
 
-        segments, srt_content = build_output(raw_chunks)
+        if need_words:
+            segments, srt_content = build_output(word_chunks)
+            raw_segments, _       = build_output(sentence_chunks)
+        else:
+            segments, srt_content = build_output(sentence_chunks)
+            raw_segments          = segments  # identical when no splitting
 
         # Emit 100% only after everything is built — right before printing JSON
         emit_progress(100)
@@ -398,6 +403,7 @@ def transcribe(video_path: str, model_dir: str | None = None,
             "segments":          segments,
             "srt_content":       srt_content,
             "detected_language": detected_lang,
+            "raw_segments":      raw_segments,
         }
     finally:
         if audio_path:

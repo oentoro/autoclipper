@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
+import { useLang } from "../i18n";
 import type { LicenseInfo } from "../types";
 
 interface Props {
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export default function LicenseGate({ onLicensed }: Props) {
+  const { t } = useLang();
   const [checking, setChecking] = useState(true);
   const [key, setKey] = useState("");
   const [activating, setActivating] = useState(false);
@@ -38,7 +40,7 @@ export default function LicenseGate({ onLicensed }: Props) {
       <div className="loading-overlay" style={{ position: "fixed" }}>
         <div className="loading-box">
           <div className="spinner" />
-          <p>Memverifikasi lisensi...</p>
+          <p>{t("licenseChecking")}</p>
         </div>
       </div>
     );
@@ -49,7 +51,7 @@ export default function LicenseGate({ onLicensed }: Props) {
       <div className="license-card">
         <div className="license-logo">✂</div>
         <h1 className="license-title">AutoClipper</h1>
-        <p className="license-subtitle">Masukkan license key untuk melanjutkan</p>
+        <p className="license-subtitle">{t("licenseSubtitle")}</p>
 
         <div className="license-form">
           <input
@@ -69,9 +71,9 @@ export default function LicenseGate({ onLicensed }: Props) {
             disabled={activating || !key.trim()}
           >
             {activating ? (
-              <><span className="spinner-sm" /> Mengaktifkan...</>
+              <><span className="spinner-sm" /> {t("licenseActivating")}</>
             ) : (
-              "Aktifkan Lisensi"
+              t("btnActivate")
             )}
           </button>
         </div>
@@ -81,17 +83,16 @@ export default function LicenseGate({ onLicensed }: Props) {
         )}
 
         <p className="license-buy-text">
-          Belum punya license?{" "}
+          {t("licenseNoBuy")}{" "}
           <a
             className="license-buy-link"
             href="#"
             onClick={(e) => {
               e.preventDefault();
-              // Ganti URL ini dengan URL Lemon Squeezy store Anda
-              open("https://your-store.lemonsqueezy.com").catch(() => {});
+              open("https://oentoro.lemonsqueezy.com/checkout/buy/cfe5beec-9237-4034-9bfa-674637e0f814").catch(() => {});
             }}
           >
-            Beli sekarang
+            {t("licenseBuyLink")}
           </a>
         </p>
       </div>
