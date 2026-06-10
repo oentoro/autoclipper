@@ -14,7 +14,16 @@ import os
 import json
 import threading
 
+# Quantized (q4) repos — preferred for M-series: ~40% size, faster inference
 MLX_REPOS = {
+    "tiny":           "mlx-community/whisper-tiny-mlx",
+    "base":           "mlx-community/whisper-base-mlx",
+    "medium":         "mlx-community/whisper-medium-mlx-q4",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo-q4",
+}
+
+# Float16 fallback — used if q4 repo is unavailable on HuggingFace Hub
+MLX_REPOS_F16 = {
     "tiny":           "mlx-community/whisper-tiny-mlx",
     "base":           "mlx-community/whisper-base-mlx",
     "medium":         "mlx-community/whisper-medium-mlx",
@@ -34,6 +43,11 @@ SIZE_ESTIMATES = {
     "tiny":           40_000_000,
     "base":           75_000_000,
     "small":         250_000_000,
+    "medium":        320_000_000,   # q4: ~320MB vs 800MB float16
+    "large-v3-turbo": 640_000_000,  # q4: ~640MB vs 1.6GB float16
+}
+
+SIZE_ESTIMATES_F16 = {
     "medium":        800_000_000,
     "large-v3-turbo": 1_600_000_000,
 }
@@ -113,12 +127,26 @@ if __name__ == "__main__":
             repo = MLX_REPOS.get(model_id)
             if not repo:
                 raise ValueError(f"Unknown MLX model: {model_id}")
+            try:
+                path = download_repo(repo, cache_dir, model_id)
+            except Exception as q4_err:
+                # q4 repo not available on Hub — fall back to float16
+                repo_f16 = MLX_REPOS_F16.get(model_id)
+                if repo_f16 and repo_f16 != repo:
+                    import sys as _sys
+                    _sys.stderr.write(f"[download] q4 tidak tersedia ({q4_err}), unduh float16: {repo_f16}\n")
+                    # Adjust size estimate for float16
+                    global SIZE_ESTIMATES
+                    SIZE_ESTIMATES = {**SIZE_ESTIMATES, **SIZE_ESTIMATES_F16}
+                    path = download_repo(repo_f16, cache_dir, model_id)
+                else:
+                    raise
         else:
             repo = FW_REPOS.get(model_id)
             if not repo:
                 raise ValueError(f"Unknown faster-whisper model: {model_id}")
+            path = download_repo(repo, cache_dir, model_id)
 
-        path = download_repo(repo, cache_dir, model_id)
         os.write(1, (json.dumps({"success": True, "path": path}) + "\n").encode("utf-8"))
     except Exception as e:
         os.write(1, (json.dumps({"error": str(e)}) + "\n").encode("utf-8"))

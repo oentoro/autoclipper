@@ -561,8 +561,8 @@ export default function TranscriptView({
           </div>
         )}
 
-        {/* Smart Crop — only visible when aspect ratio is not original */}
-        {aspectRatio !== "original" && (
+        {/* Smart Crop — hidden for original and 9:16-fit (no crop happens) */}
+        {aspectRatio !== "original" && aspectRatio !== "9:16-fit" && (
           <div className="sidebar-block smart-crop-block">
             <label className="smart-crop-toggle">
               <input

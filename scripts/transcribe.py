@@ -13,8 +13,17 @@ PRESETS = {
     "best":     {"model": "large-v3-turbo", "beam_size": 5, "batch": False, "condition_prev": True},
 }
 
-# MLX model repos for Apple Silicon
+# MLX model repos for Apple Silicon — quantized (q4) preferred: faster inference,
+# ~40% of float16 size, negligible accuracy difference on M-series GPU.
 MLX_REPOS = {
+    "tiny":           "mlx-community/whisper-tiny-mlx",
+    "base":           "mlx-community/whisper-base-mlx",
+    "medium":         "mlx-community/whisper-medium-mlx-q4",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo-q4",
+}
+
+# Float16 fallback — used when q4 repo is not cached (e.g. older downloads)
+MLX_REPOS_F16 = {
     "tiny":           "mlx-community/whisper-tiny-mlx",
     "base":           "mlx-community/whisper-base-mlx",
     "medium":         "mlx-community/whisper-medium-mlx",
@@ -26,37 +35,45 @@ MLX_FALLBACK_ORDER = ["large-v3-turbo", "medium", "base", "tiny"]
 
 _WEIGHT_EXTS = ('.safetensors', '.npz', '.bin', '.pt')
 
+def _check_repo_cached(cache_dir: str, repo: str) -> str | None:
+    """Return snapshot path if repo is completely cached, else None."""
+    cache_name = "models--" + repo.replace("/", "--")
+    snaps_dir = os.path.join(cache_dir, cache_name, "snapshots")
+    if not os.path.isdir(snaps_dir):
+        return None
+    for snap_hash in os.listdir(snaps_dir):
+        snap_dir = os.path.join(snaps_dir, snap_hash)
+        if not os.path.isdir(snap_dir):
+            continue
+        try:
+            files = os.listdir(snap_dir)
+        except OSError:
+            continue
+        has_weights = any(
+            os.path.exists(os.path.realpath(os.path.join(snap_dir, f)))
+            and f.endswith(_WEIGHT_EXTS)
+            for f in files
+        )
+        if has_weights:
+            return snap_dir
+    return None
+
 def find_best_cached_mlx_path(preferred_model: str) -> tuple[str | None, str | None]:
     """Return (local_snapshot_path, model_id) for the best complete cached MLX model.
 
-    A model is considered 'complete' only if its snapshot directory contains at
-    least one weight file (.safetensors / .npz / .bin / .pt).  Incomplete downloads
-    (directory exists but weights missing) are skipped.
+    Checks q4 quantized repos first (faster on M-series), then float16 fallback.
+    A model is complete only if its snapshot contains at least one weight file.
     Returns (None, None) if no complete model is found.
     """
     cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
     order = [preferred_model] + [m for m in MLX_FALLBACK_ORDER if m != preferred_model]
     for model in order:
-        repo = MLX_REPOS.get(model, f"mlx-community/whisper-{model}-mlx")
-        cache_name = "models--" + repo.replace("/", "--")
-        snaps_dir = os.path.join(cache_dir, cache_name, "snapshots")
-        if not os.path.isdir(snaps_dir):
-            continue
-        for snap_hash in os.listdir(snaps_dir):
-            snap_dir = os.path.join(snaps_dir, snap_hash)
-            if not os.path.isdir(snap_dir):
-                continue
-            try:
-                files = os.listdir(snap_dir)
-            except OSError:
-                continue
-            has_weights = any(
-                os.path.exists(os.path.realpath(os.path.join(snap_dir, f)))
-                and f.endswith(_WEIGHT_EXTS)
-                for f in files
-            )
-            if has_weights:
-                return snap_dir, model
+        # Prefer q4, fall back to float16
+        for repo_map in (MLX_REPOS, MLX_REPOS_F16):
+            repo = repo_map.get(model, f"mlx-community/whisper-{model}-mlx")
+            snap = _check_repo_cached(cache_dir, repo)
+            if snap:
+                return snap, model
     return None, None
 
 def seconds_to_srt_time(seconds: float) -> str:
@@ -236,14 +253,26 @@ def _transcribe_mlx(audio_path: str, model_name: str, language: str | None,
 
     def worker():
         import contextlib
-        try:
-            # Pass local snapshot path directly → no HF Hub network access at all.
-            # mlx-whisper 0.4.x has BeamSearchDecoder unimplemented; ANY integer
-            # beam_size (including 1) raises NotImplementedError.  beam_size=None
-            # is the only value that selects the working GreedyDecoder.
-            # Redirect mlx-whisper's stdout to stderr so "Detected language: ..."
-            # lines don't pollute our JSON output on stdout.
-            with contextlib.redirect_stdout(sys.stderr):
+        # Redirect mlx-whisper's stdout to stderr so "Detected language: ..."
+        # lines don't pollute our JSON output on stdout.
+        with contextlib.redirect_stdout(sys.stderr):
+            try:
+                # Try preset beam_size (mlx-whisper ≥0.5 supports BeamSearchDecoder).
+                # beam_size=1 is equivalent to greedy, pass None for that case.
+                eff_beam = beam_size if beam_size > 1 else None
+                result_box[0] = mlx_whisper.transcribe(
+                    audio_path,
+                    path_or_hf_repo=local_path,
+                    language=language or None,
+                    word_timestamps=word_timestamps,
+                    condition_on_previous_text=condition_prev,
+                    beam_size=eff_beam,
+                    temperature=0.0,
+                    verbose=False,
+                )
+            except (NotImplementedError, TypeError):
+                # Older mlx-whisper: BeamSearchDecoder not implemented — greedy only.
+                print("[transcribe] beam_size tidak didukung mlx-whisper ini, pakai greedy", file=sys.stderr)
                 result_box[0] = mlx_whisper.transcribe(
                     audio_path,
                     path_or_hf_repo=local_path,
@@ -254,10 +283,9 @@ def _transcribe_mlx(audio_path: str, model_name: str, language: str | None,
                     temperature=0.0,
                     verbose=False,
                 )
-        except Exception as exc:
-            result_box[1] = exc
-        finally:
-            done.set()
+            except Exception as exc:
+                result_box[1] = exc
+        done.set()
 
     t = threading.Thread(target=worker, daemon=True)
     t.start()

@@ -39,8 +39,12 @@ const TRANSLATE_LANGS = [
   { code: "ar", label: "العربية" },
 ];
 
+const DEV_MODE = true; // TODO: set false before release
+
 export default function App() {
-  const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(null);
+  const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(
+    DEV_MODE ? { key: "DEV-MODE", instance_id: "", product_name: "AutoClipper", customer_name: "", customer_email: "" } : null
+  );
 
   if (!licenseInfo) {
     return <LicenseGate onLicensed={setLicenseInfo} />;
@@ -552,13 +556,14 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
               {t("btnRestart")}
             </button>
           )}
-          <button
-            className="btn btn-ghost btn-sm"
-            onClick={() => setLang(lang === "id" ? "en" : "id")}
-            title="Switch language"
+          <select
+            className="lang-select"
+            value={lang}
+            onChange={e => setLang(e.target.value as "id" | "en")}
           >
-            {t("langToggle")}
-          </button>
+            <option value="id">🇮🇩 Indonesia</option>
+            <option value="en">🇬🇧 English</option>
+          </select>
         </div>
       </header>
 

@@ -48,13 +48,11 @@ export default function VideoUpload({
     onYoutubeDownload(trimmed);
   }
 
-  const phaseLabel = youtubeProgress?.phase === "merging"
-    ? t("ytMerging")
-    : youtubeProgress?.phase === "done"
-    ? t("ytDone")
-    : youtubeProgress
-    ? `${youtubeProgress.percent.toFixed(1)}%${youtubeProgress.speed ? `  ·  ${youtubeProgress.speed}` : ""}${youtubeProgress.eta && youtubeProgress.eta !== "Unknown" ? `  ·  ETA ${youtubeProgress.eta}` : ""}`
-    : t("ytStarting");
+  const isMerging = youtubeProgress?.phase === "merging";
+  const isDone    = youtubeProgress?.phase === "done";
+  const dlPct     = youtubeProgress?.percent ?? 0;
+  const dlSpeed   = youtubeProgress?.speed ?? "";
+  const dlEta     = youtubeProgress?.eta && youtubeProgress.eta !== "Unknown" ? youtubeProgress.eta : "";
 
   return (
     <div className="upload-container">
@@ -102,13 +100,22 @@ export default function VideoUpload({
           <div className="yt-icon">▶</div>
           {youtubeDownloading ? (
             <div className="yt-progress-wrap">
-              <p className="yt-progress-label">{phaseLabel}</p>
+              <div className="yt-progress-pct">
+                {isDone ? t("ytDone") : isMerging ? t("ytMerging") : youtubeProgress ? `${dlPct.toFixed(1)}%` : t("ytStarting")}
+              </div>
               <div className="yt-progress-bar-track">
                 <div
-                  className={`yt-progress-bar-fill ${youtubeProgress?.phase === "merging" ? "indeterminate" : ""}`}
-                  style={{ width: `${youtubeProgress?.phase === "merging" ? 100 : (youtubeProgress?.percent ?? 0)}%` }}
+                  className={`yt-progress-bar-fill ${isMerging ? "indeterminate" : ""}`}
+                  style={{ width: `${isMerging || isDone ? 100 : dlPct}%` }}
                 />
               </div>
+              {!isMerging && !isDone && youtubeProgress && (dlSpeed || dlEta) && (
+                <p className="yt-progress-meta">
+                  {dlSpeed && <span>{dlSpeed}</span>}
+                  {dlSpeed && dlEta && <span className="yt-meta-sep">·</span>}
+                  {dlEta && <span>ETA {dlEta}</span>}
+                </p>
+              )}
               <button className="btn btn-cancel" onClick={onCancelYoutube}>{t("btnCancel")}</button>
             </div>
           ) : (

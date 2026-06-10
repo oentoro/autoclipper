@@ -888,24 +888,6 @@ fn build_crop_filter(ratio: &str, src_w: u32, src_h: u32) -> Option<String> {
     Some(format!("crop={crop_w}:{crop_h}:{cx}:{cy}"))
 }
 
-fn escape_drawtext(s: &str) -> String {
-    s.replace('\\', "\\\\")
-     .replace('\'', "\\'")
-     .replace(':', "\\:")
-}
-
-fn build_title_overlay(title: &str, font_size: u32, color: &str, font_path: &str) -> String {
-    let text = escape_drawtext(title);
-    let color_val = if color.is_empty() { "white" } else { color };
-    let mut f = format!(
-        "drawtext=text='{text}':fontsize={font_size}:fontcolor={color_val}:x=(w-text_w)/2:y=40:shadowcolor=black@0.6:shadowx=2:shadowy=2"
-    );
-    if !font_path.is_empty() {
-        let ep = escape_drawtext(font_path);
-        f.push_str(&format!(":fontfile='{ep}'"));
-    }
-    f
-}
 
 // ─── Clip grouping ────────────────────────────────────────────────────────────
 //
@@ -1821,8 +1803,11 @@ async fn exec_smart_crop(
         .map_err(|e| format!("Gagal menjalankan smart_crop.py: {e}"))?;
     if let Some(pid) = child.id() { *pid_cell.lock().unwrap() = Some(pid); }
 
+    // Read stderr: forward PROGRESS lines as events, buffer the rest for error reporting
+    let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     if let Some(stderr) = child.stderr.take() {
         let app_clone = app.clone();
+        let buf = stderr_buf.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
@@ -1830,6 +1815,10 @@ async fn exec_smart_crop(
                     if let Ok(pct) = pct_str.trim().parse::<u8>() {
                         let _ = app_clone.emit("clip-smart-percent", pct);
                     }
+                } else {
+                    let mut g = buf.lock().unwrap();
+                    g.push_str(&line);
+                    g.push('\n');
                 }
             }
         });
@@ -1843,8 +1832,12 @@ async fn exec_smart_crop(
         Ok(())
     } else {
         let stdout = String::from_utf8_lossy(&output_r.stdout);
-        let stderr_str = String::from_utf8_lossy(&output_r.stderr);
-        let src = if !stdout.trim().is_empty() { stdout } else { stderr_str };
+        let stderr_captured = stderr_buf.lock().unwrap().clone();
+        let src = if !stdout.trim().is_empty() {
+            stdout.to_string()
+        } else {
+            stderr_captured
+        };
         let err: serde_json::Value = serde_json::from_str(&src).unwrap_or_default();
         let msg = err["error"].as_str().map(|s| s.to_string())
             .unwrap_or_else(|| src.trim().to_string());
@@ -2009,6 +2002,11 @@ pub async fn clip_video(
 
     let pid_cell = &cancel.clip_pid;
 
+    // Only pass title to burn pipeline when the selected ratio actually supports it
+    let eff_title       = if has_title { vertical_title.as_str() } else { "" };
+    let eff_title_fs    = if has_title { title_fs } else { 0 };
+    let eff_title_color = if has_title { vertical_title_color.as_str() } else { "" };
+
     let needs_burn = burn_subtitles || has_title;
 
     match (needs_burn, needs_smart) {
@@ -2022,7 +2020,7 @@ pub async fn clip_video(
             let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
             concat_groups(&app, &ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), tmp.to_str().unwrap(), pid_cell).await?;
             let entries = if burn_subtitles { build_retimed_entries(&groups) } else { vec![] };
-            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, &vertical_title, title_fs, &vertical_title_color, pid_cell).await;
+            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, eff_title, eff_title_fs, eff_title_color, pid_cell).await;
             let _ = std::fs::remove_file(&tmp);
             r?;
         }
@@ -2045,7 +2043,7 @@ pub async fn clip_video(
             let _ = std::fs::remove_file(&tmp_concat);
             r?;
             let entries = if burn_subtitles { build_retimed_entries(&groups) } else { vec![] };
-            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp_smart.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, &vertical_title, title_fs, &vertical_title_color, pid_cell).await;
+            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp_smart.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, eff_title, eff_title_fs, eff_title_color, pid_cell).await;
             let _ = std::fs::remove_file(&tmp_smart);
             r?;
         }
@@ -2097,7 +2095,7 @@ pub async fn download_youtube(
 
     let mut child = TokioCommand::new(&ytdlp)
         .args([
-            "--newline", "--no-colors",
+            "--newline", "--no-colors", "--progress",
             "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "--merge-output-format", "mp4",
             "-o", &out_template,
@@ -2105,6 +2103,8 @@ pub async fn download_youtube(
             "--print", "after_move:filepath",
             &url,
         ])
+        // Force Python to flush output immediately instead of buffering
+        .env("PYTHONUNBUFFERED", "1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
