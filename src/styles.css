@@ -299,6 +299,17 @@ body {
 .yt-req { font-size: 12px; color: var(--text2); }
 .yt-req code { background: var(--bg3); padding: 1px 5px; border-radius: 4px; font-family: monospace; }
 
+/* yt-dlp not installed */
+.ytdlp-missing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 16px;
+}
+.ytdlp-missing-title { font-size: 15px; font-weight: 600; color: var(--text1); margin: 0; }
+.ytdlp-missing-desc  { font-size: 13px; color: var(--text2); margin: 0 0 8px; }
+
 /* YouTube progress */
 .yt-progress-wrap {
   display: flex;

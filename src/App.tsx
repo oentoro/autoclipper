@@ -39,7 +39,7 @@ const TRANSLATE_LANGS = [
   { code: "ar", label: "العربية" },
 ];
 
-const DEV_MODE = true; // TODO: set false before release
+const DEV_MODE = false;
 
 export default function App() {
   const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(
@@ -108,6 +108,19 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       .finally(() => setDepsChecking(false));
   }
 
+  function handleInstallYtdlp() {
+    const ytdlpCheck = depsStatus?.checks.find(c => c.name.startsWith("yt-dlp"));
+    const installCmd = ytdlpCheck?.install_cmd;
+    if (!installCmd) return;
+    setYtdlpInstalling(true);
+    invoke("install_dependency", { installCmd })
+      .finally(() => {
+        setTimeout(() => {
+          invoke<DepsStatus>("check_dependencies").then(setDepsStatus).finally(() => setYtdlpInstalling(false));
+        }, 3000);
+      });
+  }
+
   const [step, setStep] = useState<AppStep>("upload");
   const [videoPath, setVideoPath] = useState<string>("");
   const [segments, setSegments] = useState<SrtSegment[]>([]);
@@ -138,6 +151,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [verticalTitle, setVerticalTitle] = useState<string>("");
   const [verticalTitleFontSize, setVerticalTitleFontSize] = useState<number>(48);
   const [verticalTitleColor, setVerticalTitleColor] = useState<string>("#ffffff");
+  const [ytdlpInstalling, setYtdlpInstalling] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingMsg, setLoadingMsg] = useState<string>("");
@@ -615,6 +629,9 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             onCancelYoutube={handleCancelYoutube}
             youtubeDownloading={youtubeDownloading}
             youtubeProgress={youtubeProgress}
+            ytdlpOk={depsStatus?.checks.some(c => c.name.startsWith("yt-dlp") && c.ok) ?? true}
+            ytdlpInstalling={ytdlpInstalling}
+            onInstallYtdlp={handleInstallYtdlp}
           />
         )}
 

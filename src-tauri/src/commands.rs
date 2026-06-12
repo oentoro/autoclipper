@@ -1988,8 +1988,9 @@ pub async fn clip_video(
     let total_segments = selected.len() + manual_clips.len();
     let total_duration: f64 = groups.iter().map(|g| g.duration()).sum();
 
-    // Smart crop: skip FFmpeg center crop; let smart_crop.py handle it instead
-    let needs_smart = smart_crop && aspect_ratio != "original";
+    // Smart crop: skip FFmpeg center crop; let smart_crop.py handle it instead.
+    // "9:16-fit" uses scale+pad (no crop), so smart crop is irrelevant there too.
+    let needs_smart = smart_crop && aspect_ratio != "original" && aspect_ratio != "9:16-fit";
     let has_title = !vertical_title.trim().is_empty() && aspect_ratio == "9:16-fit";
     let title_fs = if vertical_title_font_size == 0 { 48 } else { vertical_title_font_size };
 

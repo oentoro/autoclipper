@@ -10,6 +10,9 @@ interface Props {
   onCancelYoutube?: () => void;
   youtubeDownloading?: boolean;
   youtubeProgress?: YtDownloadProgress | null;
+  ytdlpOk?: boolean;
+  ytdlpInstalling?: boolean;
+  onInstallYtdlp?: () => void;
 }
 
 export default function VideoUpload({
@@ -19,6 +22,9 @@ export default function VideoUpload({
   onCancelYoutube,
   youtubeDownloading = false,
   youtubeProgress = null,
+  ytdlpOk = true,
+  ytdlpInstalling = false,
+  onInstallYtdlp,
 }: Props) {
   const { t } = useLang();
   const [dragOver, setDragOver] = useState(false);
@@ -98,7 +104,19 @@ export default function VideoUpload({
       ) : (
         <div className="yt-zone">
           <div className="yt-icon">▶</div>
-          {youtubeDownloading ? (
+          {!ytdlpOk ? (
+            <div className="ytdlp-missing">
+              <p className="ytdlp-missing-title">{t("ytdlpMissing")}</p>
+              <p className="ytdlp-missing-desc">{t("ytdlpMissingDesc")}</p>
+              <button
+                className="btn btn-primary"
+                onClick={onInstallYtdlp}
+                disabled={ytdlpInstalling}
+              >
+                {ytdlpInstalling ? t("ytdlpInstalling") : t("ytdlpInstall")}
+              </button>
+            </div>
+          ) : youtubeDownloading ? (
             <div className="yt-progress-wrap">
               <div className="yt-progress-pct">
                 {isDone ? t("ytDone") : isMerging ? t("ytMerging") : youtubeProgress ? `${dlPct.toFixed(1)}%` : t("ytStarting")}
