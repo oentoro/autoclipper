@@ -2448,6 +2448,9 @@ pub async fn install_dependency(install_cmd: String) -> Result<(), String> {
 
 // ─── License management ──────────────────────────────────────────────────────
 
+/// Ganti dengan product_id dari Gumroad (lihat di License Key module content page)
+const GUMROAD_PRODUCT_ID: &str = "Zf1MU9sNCEuC2JI4-kpc9A==";
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LicenseInfo {
     pub key: String,
@@ -2455,7 +2458,15 @@ pub struct LicenseInfo {
     pub product_name: String,
     pub customer_name: String,
     pub customer_email: String,
+    #[serde(default = "default_platform")]
+    pub platform: String, // "lemonsqueezy" or "gumroad"
 }
+
+fn default_platform() -> String {
+    "lemonsqueezy".to_string()
+}
+
+// ─── LemonSqueezy API types ──────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct LsActivateResponse {
@@ -2479,12 +2490,6 @@ struct LsMeta {
     customer_email: String,
 }
 
-fn license_file(app: &tauri::AppHandle) -> PathBuf {
-    app.path().app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("license.json")
-}
-
 #[derive(Debug, Deserialize)]
 struct LsValidateResponse {
     valid: bool,
@@ -2492,6 +2497,46 @@ struct LsValidateResponse {
     instance: Option<LsInstance>,
     meta: Option<LsMeta>,
 }
+
+// ─── Gumroad API types ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct GrVerifyResponse {
+    success: bool,
+    uses: Option<u64>,
+    purchase: Option<GrPurchase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrPurchase {
+    product_name: Option<String>,
+    email: Option<String>,
+    refunded: Option<bool>,
+    disputed: Option<bool>,
+    chargebacked: Option<bool>,
+    subscription_ended_at: Option<String>,
+    subscription_cancelled_at: Option<String>,
+    subscription_failed_at: Option<String>,
+}
+
+fn license_file(app: &tauri::AppHandle) -> PathBuf {
+    app.path().app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("license.json")
+}
+
+async fn save_license(app: &tauri::AppHandle, info: &LicenseInfo) -> Result<(), String> {
+    let path = license_file(app);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await
+            .map_err(|e| format!("Gagal membuat direktori: {e}"))?;
+    }
+    tokio::fs::write(&path, serde_json::to_string(info).unwrap()).await
+        .map_err(|e| format!("Gagal menyimpan lisensi: {e}"))?;
+    Ok(())
+}
+
+// ─── License commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn check_license(app: tauri::AppHandle) -> Option<LicenseInfo> {
@@ -2502,29 +2547,75 @@ pub async fn check_license(app: tauri::AppHandle) -> Option<LicenseInfo> {
             product_name: "AutoClipper".to_string(),
             customer_name: "Developer".to_string(),
             customer_email: String::new(),
+            platform: "lemonsqueezy".to_string(),
         });
     }
     let path = license_file(&app);
     let content = tokio::fs::read_to_string(&path).await.ok()?;
     let info: LicenseInfo = serde_json::from_str(&content).ok()?;
 
-    // Online re-validation — reject if server says invalid
     let client = reqwest::Client::new();
-    let resp = client
-        .post("https://api.lemonsqueezy.com/v1/licenses/validate")
-        .form(&[("license_key", info.key.as_str()), ("instance_id", info.instance_id.as_str())])
-        .timeout(std::time::Duration::from_secs(10))
-        .send().await;
 
-    match resp {
-        Ok(r) => {
-            if let Ok(body) = r.json::<LsValidateResponse>().await {
-                if body.valid { Some(info) } else { None }
-            } else {
-                Some(info) // parse error → allow offline (grace)
+    match info.platform.as_str() {
+        "gumroad" => {
+            // Verify via Gumroad API
+            let resp = client
+                .post("https://api.gumroad.com/v2/licenses/verify")
+                .form(&[
+                    ("product_id", GUMROAD_PRODUCT_ID),
+                    ("license_key", info.key.as_str()),
+                    ("increment_uses_count", "false"),
+                ])
+                .timeout(std::time::Duration::from_secs(10))
+                .send().await;
+
+            match resp {
+                Ok(r) => {
+                    if let Ok(body) = r.json::<GrVerifyResponse>().await {
+                        if body.success {
+                            // Check refund/dispute/chargeback status
+                            if let Some(p) = &body.purchase {
+                                let bad = p.refunded.unwrap_or(false)
+                                    || p.disputed.unwrap_or(false)
+                                    || p.chargebacked.unwrap_or(false);
+                                if bad {
+                                    return None;
+                                }
+                                // Check subscription ended/cancelled/failed
+                                if p.subscription_ended_at.is_some()
+                                    || p.subscription_cancelled_at.is_some()
+                                    || p.subscription_failed_at.is_some()
+                                {
+                                    return None;
+                                }
+                            }
+                            return Some(info);
+                        }
+                    }
+                    None
+                }
+                Err(_) => Some(info), // no internet → allow offline (grace)
             }
         }
-        Err(_) => Some(info), // no internet → allow offline (grace)
+        _ => {
+            // Default: LemonSqueezy validate
+            let resp = client
+                .post("https://api.lemonsqueezy.com/v1/licenses/validate")
+                .form(&[("license_key", info.key.as_str()), ("instance_id", info.instance_id.as_str())])
+                .timeout(std::time::Duration::from_secs(10))
+                .send().await;
+
+            match resp {
+                Ok(r) => {
+                    if let Ok(body) = r.json::<LsValidateResponse>().await {
+                        if body.valid { Some(info) } else { None }
+                    } else {
+                        Some(info) // parse error → allow offline (grace)
+                    }
+                }
+                Err(_) => Some(info), // no internet → allow offline (grace)
+            }
+        }
     }
 }
 
@@ -2540,45 +2631,86 @@ pub async fn activate_license(app: tauri::AppHandle, key: String) -> Result<Lice
         .unwrap_or_else(|_| "AutoClipper".to_string());
 
     let client = reqwest::Client::new();
-    let resp = client
+
+    // ── Try LemonSqueezy first ────────────────────────────────────────────
+    let ls_resp = client
         .post("https://api.lemonsqueezy.com/v1/licenses/activate")
         .form(&[("license_key", key.as_str()), ("instance_name", instance_name.as_str())])
         .timeout(std::time::Duration::from_secs(15))
         .send()
-        .await
-        .map_err(|e| format!("Gagal menghubungi server lisensi: {e}"))?;
+        .await;
 
-    let body: LsActivateResponse = resp.json().await
-        .map_err(|e| format!("Respons server tidak valid: {e}"))?;
+    if let Ok(resp) = ls_resp {
+        if let Ok(body) = resp.json::<LsActivateResponse>().await {
+            if body.activated {
+                let instance = body.instance.ok_or("Data instance tidak ditemukan")?;
+                let meta = body.meta.unwrap_or(LsMeta {
+                    product_name: "AutoClipper".to_string(),
+                    customer_name: String::new(),
+                    customer_email: String::new(),
+                });
 
-    if !body.activated {
-        return Err(body.error.unwrap_or_else(|| "Lisensi tidak valid atau sudah habis digunakan".to_string()));
+                let info = LicenseInfo {
+                    key: key.clone(),
+                    instance_id: instance.id,
+                    product_name: meta.product_name,
+                    customer_name: meta.customer_name,
+                    customer_email: meta.customer_email,
+                    platform: "lemonsqueezy".to_string(),
+                };
+
+                save_license(&app, &info).await?;
+                return Ok(info);
+            }
+        }
     }
 
-    let instance = body.instance.ok_or("Data instance tidak ditemukan")?;
-    let meta = body.meta.unwrap_or(LsMeta {
-        product_name: "AutoClipper".to_string(),
-        customer_name: String::new(),
-        customer_email: String::new(),
-    });
+    // ── Fallback: Gumroad verify ──────────────────────────────────────────
+    if GUMROAD_PRODUCT_ID != "YOUR_GUMROAD_PRODUCT_ID_HERE" {
+        let gr_resp = client
+            .post("https://api.gumroad.com/v2/licenses/verify")
+            .form(&[
+                ("product_id", GUMROAD_PRODUCT_ID),
+                ("license_key", key.as_str()),
+                ("increment_uses_count", "true"),
+            ])
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| format!("Gagal menghubungi server lisensi: {e}"))?;
 
-    let info = LicenseInfo {
-        key,
-        instance_id: instance.id,
-        product_name: meta.product_name,
-        customer_name: meta.customer_name,
-        customer_email: meta.customer_email,
-    };
+        let body: GrVerifyResponse = gr_resp.json().await
+            .map_err(|e| format!("Respons server tidak valid: {e}"))?;
 
-    let path = license_file(&app);
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await
-            .map_err(|e| format!("Gagal membuat direktori: {e}"))?;
+        if body.success {
+            let purchase = body.purchase.unwrap_or(GrPurchase {
+                product_name: None,
+                email: None,
+                refunded: None,
+                disputed: None,
+                chargebacked: None,
+                subscription_ended_at: None,
+                subscription_cancelled_at: None,
+                subscription_failed_at: None,
+            });
+
+            let info = LicenseInfo {
+                key,
+                instance_id: instance_name,
+                product_name: purchase.product_name.unwrap_or_else(|| "AutoClipper".to_string()),
+                customer_name: String::new(),
+                customer_email: purchase.email.unwrap_or_default(),
+                platform: "gumroad".to_string(),
+            };
+
+            save_license(&app, &info).await?;
+            return Ok(info);
+        }
+
+        return Err("License key tidak valid di LemonSqueezy maupun Gumroad".to_string());
     }
-    tokio::fs::write(&path, serde_json::to_string(&info).unwrap()).await
-        .map_err(|e| format!("Gagal menyimpan lisensi: {e}"))?;
 
-    Ok(info)
+    Err("Gagal mengaktivasi lisensi. Pastikan license key valid.".to_string())
 }
 
 #[tauri::command]
@@ -2589,13 +2721,16 @@ pub async fn deactivate_license(app: tauri::AppHandle) -> Result<(), String> {
     }
     if let Ok(content) = tokio::fs::read_to_string(&path).await {
         if let Ok(info) = serde_json::from_str::<LicenseInfo>(&content) {
-            let client = reqwest::Client::new();
-            let _ = client
-                .post("https://api.lemonsqueezy.com/v1/licenses/deactivate")
-                .form(&[("license_key", info.key.as_str()), ("instance_id", info.instance_id.as_str())])
-                .timeout(std::time::Duration::from_secs(10))
-                .send()
-                .await;
+            if info.platform == "lemonsqueezy" {
+                let client = reqwest::Client::new();
+                let _ = client
+                    .post("https://api.lemonsqueezy.com/v1/licenses/deactivate")
+                    .form(&[("license_key", info.key.as_str()), ("instance_id", info.instance_id.as_str())])
+                    .timeout(std::time::Duration::from_secs(10))
+                    .send()
+                    .await;
+            }
+            // Gumroad: no deactivate endpoint — just delete the file below
         }
     }
     tokio::fs::remove_file(&path).await

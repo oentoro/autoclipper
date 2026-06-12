@@ -92,7 +92,18 @@ export default function LicenseGate({ onLicensed }: Props) {
               open("https://oentoro.lemonsqueezy.com/checkout/buy/cfe5beec-9237-4034-9bfa-674637e0f814").catch(() => {});
             }}
           >
-            {t("licenseBuyLink")}
+            LemonSqueezy
+          </a>
+          {" · "}
+          <a
+            className="license-buy-link"
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              open("https://czaroentoro.gumroad.com/l/autoclipper").catch(() => {});
+            }}
+          >
+            Gumroad
           </a>
         </p>
       </div>

@@ -108,6 +108,7 @@ export interface LicenseInfo {
   product_name: string;
   customer_name: string;
   customer_email: string;
+  platform: string; // "lemonsqueezy" | "gumroad"
 }
 
 export interface DepCheck {

@@ -43,7 +43,7 @@ const DEV_MODE = false;
 
 export default function App() {
   const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(
-    DEV_MODE ? { key: "DEV-MODE", instance_id: "", product_name: "AutoClipper", customer_name: "", customer_email: "" } : null
+    DEV_MODE ? { key: "DEV-MODE", instance_id: "", product_name: "AutoClipper", customer_name: "", customer_email: "", platform: "lemonsqueezy" } : null
   );
 
   if (!licenseInfo) {
