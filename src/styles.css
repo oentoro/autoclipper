@@ -709,6 +709,35 @@ body {
 }
 .subtitle-toggle:has(input:checked) .subtitle-toggle-icon { background: var(--accent); color: white; }
 
+/* Subtitle mode selector */
+.subtitle-mode-group {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.subtitle-mode-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.subtitle-mode-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text2);
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.subtitle-mode-option input[type="radio"] { accent-color: var(--accent); cursor: pointer; }
+.subtitle-mode-option.active { background: rgba(108,99,255,0.12); color: var(--text); font-weight: 600; }
+.subtitle-mode-option:hover { background: var(--bg4, var(--bg2)); }
+
 /* Transcript main */
 .transcript-main {
   display: flex;

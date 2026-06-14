@@ -30,8 +30,8 @@ MLX_REPOS_F16 = {
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
 }
 
-# Fallback priority when preferred model is not cached
-MLX_FALLBACK_ORDER = ["large-v3-turbo", "medium", "base", "tiny"]
+# Size-ascending order (smallest → largest) — used to build smart fallback
+MLX_SIZE_ORDER = ["tiny", "base", "medium", "large-v3-turbo"]
 
 _WEIGHT_EXTS = ('.safetensors', '.npz', '.bin', '.pt')
 
@@ -61,14 +61,20 @@ def _check_repo_cached(cache_dir: str, repo: str) -> str | None:
 def find_best_cached_mlx_path(preferred_model: str) -> tuple[str | None, str | None]:
     """Return (local_snapshot_path, model_id) for the best complete cached MLX model.
 
-    Checks q4 quantized repos first (faster on M-series), then float16 fallback.
-    A model is complete only if its snapshot contains at least one weight file.
+    Fallback order: preferred first, then ascending in size (next larger), then
+    descending (smaller). This ensures e.g. 'tiny' falls to 'base' not 'large-v3-turbo'.
+    Checks q4 quantized repos before float16 for each candidate.
     Returns (None, None) if no complete model is found.
     """
     cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-    order = [preferred_model] + [m for m in MLX_FALLBACK_ORDER if m != preferred_model]
+
+    pref_idx = MLX_SIZE_ORDER.index(preferred_model) \
+        if preferred_model in MLX_SIZE_ORDER else len(MLX_SIZE_ORDER)
+    larger  = MLX_SIZE_ORDER[pref_idx + 1:]          # next larger models
+    smaller = MLX_SIZE_ORDER[:pref_idx][::-1]         # smaller models, largest-first
+    order   = [preferred_model] + larger + smaller
+
     for model in order:
-        # Prefer q4, fall back to float16
         for repo_map in (MLX_REPOS, MLX_REPOS_F16):
             repo = repo_map.get(model, f"mlx-community/whisper-{model}-mlx")
             snap = _check_repo_cached(cache_dir, repo)

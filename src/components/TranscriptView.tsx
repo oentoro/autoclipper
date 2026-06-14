@@ -36,6 +36,9 @@ interface Props {
   onSaveSrt: () => void;
   onSegmentEdit: (index: number, newText: string) => void;
   onBurnSubtitlesChange: (v: boolean) => void;
+  subtitleMode: "translated_only" | "bilingual" | "original_only";
+  onSubtitleModeChange: (v: "translated_only" | "bilingual" | "original_only") => void;
+  hasTranslation: boolean;
   onAspectRatioChange: (v: string) => void;
   onSmartCropChange: (v: boolean) => void;
   smartCropTransition: "smooth" | "aggressive";
@@ -128,6 +131,9 @@ export default function TranscriptView({
   onSaveSrt,
   onSegmentEdit,
   onBurnSubtitlesChange,
+  subtitleMode,
+  onSubtitleModeChange,
+  hasTranslation,
   onAspectRatioChange,
   onSmartCropChange,
   smartCropTransition,
@@ -617,6 +623,27 @@ export default function TranscriptView({
               {t("subtitleBurn")}
             </span>
           </label>
+          {burnSubtitles && hasTranslation && (
+            <div className="subtitle-mode-group">
+              <span className="sidebar-label">{t("subtitleMode")}</span>
+              <div className="subtitle-mode-options">
+                {(["translated_only", "bilingual", "original_only"] as const).map(mode => (
+                  <label key={mode} className={`subtitle-mode-option${subtitleMode === mode ? " active" : ""}`}>
+                    <input
+                      type="radio"
+                      name="subtitle-mode"
+                      value={mode}
+                      checked={subtitleMode === mode}
+                      onChange={() => onSubtitleModeChange(mode)}
+                    />
+                    {t(mode === "translated_only" ? "subtitleModeTranslated"
+                      : mode === "bilingual" ? "subtitleModeBilingual"
+                      : "subtitleModeOriginal")}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           {burnSubtitles && (
             <div className="subtitle-settings">
               <div className="subtitle-setting-row">

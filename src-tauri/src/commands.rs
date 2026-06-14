@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Manager, Emitter};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -744,31 +744,60 @@ async fn ensure_llama_server(
         Jalankan: python3 scripts/download_llama_server.py".to_string()
     )?;
 
+    // Use all physical threads (leave 1 for OS), capped at 16
+    let cpu_threads = std::thread::available_parallelism()
+        .map(|n| (n.get().saturating_sub(1)).max(1).min(16))
+        .unwrap_or(4)
+        .to_string();
+
     let mut args = vec![
         "--model".to_string(), model_path.to_string(),
         "--port".to_string(), LLAMA_PORT.to_string(),
-        "--ctx-size".to_string(), "32768".to_string(),
-        "--threads".to_string(), "4".to_string(),
+        "--ctx-size".to_string(), "8192".to_string(),
+        "--threads".to_string(), cpu_threads,
         "--parallel".to_string(), "1".to_string(),
+        "--log-disable".to_string(),
     ];
     #[cfg(target_os = "macos")]
-    { args.push("-ngl".to_string()); args.push("999".to_string()); } // Metal GPU
+    { args.push("-ngl".to_string()); args.push("999".to_string()); } // Metal GPU offload
 
-    let child = std::process::Command::new(&binary)
+    // Pipe stderr so we can include it in the timeout error message
+    let stderr_buf = Arc::new(Mutex::new(String::new()));
+    let stderr_buf_clone = Arc::clone(&stderr_buf);
+
+    let mut child = std::process::Command::new(&binary)
         .args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("Gagal menjalankan llama-server: {e}"))?;
 
+    // Drain stderr in background thread so the pipe never blocks
+    let stderr_handle = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                let mut g = stderr_buf_clone.lock().unwrap();
+                g.push_str(&line);
+                g.push('\n');
+                // Keep only the last 4 KB to avoid unbounded growth
+                if g.len() > 4096 {
+                    let trim = g.len() - 4096;
+                    *g = g[trim..].to_string();
+                }
+            }
+        })
+    });
+
     { *state.process.lock().unwrap() = Some(child); }
 
-    // Poll health endpoint (up to 90 seconds — large models take time to load)
+    // Poll health endpoint — up to 180 s (large models + GPU layer loading can be slow)
     let health = format!("http://localhost:{LLAMA_PORT}/health");
     let client = reqwest::Client::new();
     let mut ready = false;
-    for _ in 0..90 {
+    for _ in 0..180 {
         if client.get(&health).timeout(std::time::Duration::from_secs(1))
             .send().await.map(|r| r.status().is_success()).unwrap_or(false)
         {
@@ -781,10 +810,20 @@ async fn ensure_llama_server(
     if !ready {
         let mut g = state.process.lock().unwrap();
         if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); }
-        return Err(
-            "llama-server gagal start dalam 90 detik. \
-            Coba model yang lebih kecil atau periksa apakah file .gguf valid.".to_string()
-        );
+        drop(g);
+        if let Some(h) = stderr_handle { let _ = h.join(); }
+        let log = stderr_buf.lock().unwrap();
+        let log_tail: String = log.lines().rev().take(6).collect::<Vec<_>>()
+            .into_iter().rev().collect::<Vec<_>>().join("\n");
+        let detail = if log_tail.is_empty() {
+            String::new()
+        } else {
+            format!("\n\nLog llama-server:\n{log_tail}")
+        };
+        return Err(format!(
+            "llama-server gagal start dalam 180 detik. \
+            Coba model yang lebih kecil atau periksa apakah file .gguf valid.{detail}"
+        ));
     }
 
     *state.current_model.lock().unwrap() = model_path.to_string();
@@ -933,7 +972,13 @@ fn group_segments<'a>(selected: &[&'a SrtSegment]) -> Vec<ClipGroup<'a>> {
 }
 
 // Subtitle entries retimed to the merged clip timeline.
-fn build_retimed_entries(groups: &[ClipGroup]) -> Vec<serde_json::Value> {
+// subtitle_mode: "translated_only" | "bilingual" | "original_only"
+// original_by_index: map from segment.index → original text, used for bilingual / original_only
+fn build_retimed_entries(
+    groups: &[ClipGroup],
+    subtitle_mode: &str,
+    original_by_index: &std::collections::HashMap<usize, String>,
+) -> Vec<serde_json::Value> {
     let mut entries = Vec::new();
     let mut cursor = 0.0_f64;
     for group in groups {
@@ -942,7 +987,27 @@ fn build_retimed_entries(groups: &[ClipGroup]) -> Vec<serde_json::Value> {
         for seg in &group.segs {
             let sub_start = (cursor + (seg.start - g_start)).max(0.0);
             let sub_end   = (cursor + (seg.end   - g_start)).min(cursor + g_dur);
-            entries.push(serde_json::json!({ "start": sub_start, "end": sub_end, "text": seg.text }));
+            let text = match subtitle_mode {
+                "original_only" => original_by_index
+                    .get(&seg.index)
+                    .map(|s| s.as_str())
+                    .unwrap_or(&seg.text)
+                    .to_string(),
+                "bilingual" => {
+                    let orig = original_by_index
+                        .get(&seg.index)
+                        .map(|s| s.as_str())
+                        .unwrap_or(&seg.text);
+                    if orig == seg.text {
+                        // Not actually translated — show once
+                        seg.text.clone()
+                    } else {
+                        format!("{}\n{}", orig, seg.text)
+                    }
+                }
+                _ => seg.text.clone(), // "translated_only" or default
+            };
+            entries.push(serde_json::json!({ "start": sub_start, "end": sub_end, "text": text }));
         }
         cursor += g_dur;
     }
@@ -1231,17 +1296,52 @@ fn repair_truncated_classify_json(s: &str) -> String {
     format!("{}]}}", trimmed)
 }
 
-fn parse_translate_array(content: &str, expected_len: usize) -> Result<Vec<String>, String> {
-    let start = content.find('[')
+fn extract_first_json_array(content: &str) -> Option<&str> {
+    let start = content.find('[')?;
+    let bytes = content.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, &b) in bytes[start..].iter().enumerate() {
+        if escaped { escaped = false; continue; }
+        if b == b'\\' && in_string { escaped = true; continue; }
+        if b == b'"' { in_string = !in_string; continue; }
+        if in_string { continue; }
+        match b {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&content[start..start + i + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_translate_array(content: &str, originals: &[String]) -> Result<Vec<String>, String> {
+    let expected_len = originals.len();
+    let json_slice = extract_first_json_array(content)
         .ok_or_else(|| format!("JSON array tidak ditemukan di response: {content}"))?;
-    let end = content.rfind(']')
-        .ok_or("Penutup JSON array tidak ditemukan")?;
-    let arr: Vec<String> = serde_json::from_str(&content[start..=end])
+    let mut arr: Vec<String> = serde_json::from_str(json_slice)
         .map_err(|e| format!("Gagal parse array terjemahan: {e}\nContent: {content}"))?;
-    if arr.len() != expected_len {
-        return Err(format!(
-            "Jumlah teks tidak cocok: dikirim {}, diterima {}", expected_len, arr.len()
-        ));
+
+    if arr.is_empty() {
+        return Err(format!("LLM mengembalikan array kosong.\nContent: {content}"));
+    }
+
+    // Gracefully handle count mismatch: pad with originals or truncate
+    match arr.len().cmp(&expected_len) {
+        std::cmp::Ordering::Less => {
+            // Pad missing entries with original (untranslated) text
+            arr.extend(originals[arr.len()..].iter().cloned());
+        }
+        std::cmp::Ordering::Greater => {
+            arr.truncate(expected_len);
+        }
+        std::cmp::Ordering::Equal => {}
     }
     Ok(arr)
 }
@@ -1277,7 +1377,7 @@ pub async fn translate_transcript(
     let all_texts: Vec<String> = segments.iter().map(|s| s.text.clone()).collect();
     let mut translated: Vec<String> = Vec::new();
 
-    for chunk in all_texts.chunks(25) {
+    for chunk in all_texts.chunks(15) {
         let src = lang_display_name(&source_language);
         let tgt = lang_display_name(&target_language);
         let prompt = build_translate_prompt(&serde_json::to_string(chunk).unwrap(), src, tgt);
@@ -1290,7 +1390,7 @@ pub async fn translate_transcript(
             )?
         };
 
-        translated.extend(parse_translate_array(&content, chunk.len())?);
+        translated.extend(parse_translate_array(&content, chunk)?);
     }
 
     let mut new_segments = segments;
@@ -1946,6 +2046,8 @@ pub async fn clip_video(
     manual_clips: Vec<ManualClip>,
     output_path: String,
     burn_subtitles: bool,
+    subtitle_mode: String,
+    original_segments: Vec<SrtSegment>,
     aspect_ratio: String,
     smart_crop: bool,
     smart_crop_transition: String,
@@ -1988,6 +2090,11 @@ pub async fn clip_video(
     let total_segments = selected.len() + manual_clips.len();
     let total_duration: f64 = groups.iter().map(|g| g.duration()).sum();
 
+    // Build original-text lookup for bilingual / original_only modes
+    let eff_subtitle_mode = if original_segments.is_empty() { "translated_only" } else { subtitle_mode.as_str() };
+    let original_by_index: std::collections::HashMap<usize, String> = original_segments
+        .iter().map(|s| (s.index, s.text.clone())).collect();
+
     // Smart crop: skip FFmpeg center crop; let smart_crop.py handle it instead.
     // "9:16-fit" uses scale+pad (no crop), so smart crop is irrelevant there too.
     let needs_smart = smart_crop && aspect_ratio != "original" && aspect_ratio != "9:16-fit";
@@ -2020,7 +2127,7 @@ pub async fn clip_video(
         (true, false) => {
             let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
             concat_groups(&app, &ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), tmp.to_str().unwrap(), pid_cell).await?;
-            let entries = if burn_subtitles { build_retimed_entries(&groups) } else { vec![] };
+            let entries = if burn_subtitles { build_retimed_entries(&groups, eff_subtitle_mode, &original_by_index) } else { vec![] };
             let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, eff_title, eff_title_fs, eff_title_color, pid_cell).await;
             let _ = std::fs::remove_file(&tmp);
             r?;
@@ -2043,7 +2150,7 @@ pub async fn clip_video(
             let r = exec_smart_crop(&app, &python, &ffmpeg, tmp_concat.to_str().unwrap(), tmp_smart.to_str().unwrap(), &aspect_ratio, &smart_crop_transition, pid_cell).await;
             let _ = std::fs::remove_file(&tmp_concat);
             r?;
-            let entries = if burn_subtitles { build_retimed_entries(&groups) } else { vec![] };
+            let entries = if burn_subtitles { build_retimed_entries(&groups, eff_subtitle_mode, &original_by_index) } else { vec![] };
             let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp_smart.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, eff_title, eff_title_fs, eff_title_color, pid_cell).await;
             let _ = std::fs::remove_file(&tmp_smart);
             r?;

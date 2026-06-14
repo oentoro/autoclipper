@@ -131,6 +131,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [detectedLanguage, setDetectedLanguage] = useState<string>("");
   const [clipResult, setClipResult] = useState<ClipResult | null>(null);
   const [burnSubtitles, setBurnSubtitles] = useState<boolean>(true);
+  const [subtitleMode, setSubtitleMode] = useState<"translated_only" | "bilingual" | "original_only">("translated_only");
+  const [originalSegments, setOriginalSegments] = useState<SrtSegment[]>([]);
   const [aspectRatio, setAspectRatio] = useState<string>("original");
   const [smartCrop, setSmartCrop] = useState<boolean>(false);
   const [smartCropTransition, setSmartCropTransition] = useState<"smooth" | "aggressive">("smooth");
@@ -174,6 +176,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setSelectedIndices(new Set());
     setSections([]);
     setClipResult(null);
+    setOriginalSegments([]);
     setTranscribeDuration(0);
     setStep("ready");
   }
@@ -277,6 +280,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     setError("");
 
     try {
+      const preTranslateSegments = segments;
       const result = await invoke<TranslateResult>("translate_transcript", {
         segments,
         sourceLanguage: detectedLanguage || "auto",
@@ -284,6 +288,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         modelPath: selectedLlm?.source === "local" ? selectedLlm.path : "",
         ollamaModel: selectedLlm?.source === "ollama" ? selectedLlm.ollama_model : "",
       });
+      setOriginalSegments(preTranslateSegments);
+      setSubtitleMode("translated_only");
       setSegments(result.segments);
       setSrtContent(result.srt_content);
     } catch (e) {
@@ -451,6 +457,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         selectedIndices: Array.from(selectedIndices),
         outputPath: outputPath as string,
         burnSubtitles,
+        subtitleMode,
+        originalSegments,
         aspectRatio,
         smartCrop,
         smartCropTransition,
@@ -745,6 +753,9 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             onSaveSrt={handleSaveSrt}
             onSegmentEdit={handleSegmentEdit}
             onBurnSubtitlesChange={setBurnSubtitles}
+            subtitleMode={subtitleMode}
+            onSubtitleModeChange={setSubtitleMode}
+            hasTranslation={originalSegments.length > 0}
             onAspectRatioChange={(v) => { setAspectRatio(v); if (v === "original") setSmartCrop(false); }}
             smartCrop={smartCrop}
             onSmartCropChange={setSmartCrop}

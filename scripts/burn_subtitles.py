@@ -34,12 +34,42 @@ if _system == "Darwin":
         "/System/Library/Fonts/Supplemental/Arial.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
     ]
+    # CJK fonts on macOS.
+    # AppleSDGothicNeo covers Korean + Japanese + Chinese → listed first.
+    # Hiragino covers Japanese + Chinese but NOT Korean.
+    # STHeiti covers Chinese + Japanese but NOT Korean.
+    FONT_CANDIDATES_CJK = [
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",      # KO ✓ JA ✓ ZH ✓
+        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", # KO ✗ JA ✓ ZH ✓
+        "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",         # KO ✗ JA ✓ ZH ✓
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
+        "/Library/Fonts/NanumGothic.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    ]
 elif _system == "Windows":
     FONT_CANDIDATES = [
         "C:/Windows/Fonts/arialbd.ttf",
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/calibrib.ttf",
         "C:/Windows/Fonts/segoeui.ttf",
+    ]
+    FONT_CANDIDATES_CJK = [
+        # Japanese
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/msmincho.ttc",
+        # Chinese Simplified
+        "C:/Windows/Fonts/msyh.ttc",       # Microsoft YaHei
+        "C:/Windows/Fonts/simsun.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        # Chinese Traditional
+        "C:/Windows/Fonts/msjh.ttc",       # Microsoft JhengHei
+        # Korean
+        "C:/Windows/Fonts/malgun.ttf",
+        "C:/Windows/Fonts/malgunbd.ttf",
+        "C:/Windows/Fonts/gulim.ttc",
     ]
 else:
     FONT_CANDIDATES = [
@@ -49,19 +79,125 @@ else:
         "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
     ]
+    FONT_CANDIDATES_CJK = [
+        # Noto CJK — covers Japanese, Chinese, Korean (install: apt install fonts-noto-cjk)
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJKkr-Regular.otf",
+        # Korean — Nanum
+        "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf",
+    ]
 
-def find_font(size, preferred_path=None):
-    if preferred_path and os.path.exists(preferred_path):
+
+def _has_cjk(text: str) -> bool:
+    """Return True if text contains Hangul, CJK, or kana characters."""
+    for ch in text:
+        cp = ord(ch)
+        if (0x1100 <= cp <= 0x11FF    # Hangul Jamo
+                or 0x3130 <= cp <= 0x318F  # Hangul Compat Jamo
+                or 0xAC00 <= cp <= 0xD7AF  # Hangul Syllables
+                or 0x4E00 <= cp <= 0x9FFF  # CJK Unified
+                or 0x3040 <= cp <= 0x30FF  # Hiragana + Katakana
+                or 0x3400 <= cp <= 0x4DBF  # CJK Ext-A
+                or 0x20000 <= cp <= 0x2A6DF):  # CJK Ext-B
+            return True
+    return False
+
+
+def _cjk_test_pair(text: str) -> tuple:
+    """Return two distinct test chars matching the CJK script found in text.
+
+    Used to detect .notdef boxes: fonts without a script render all missing
+    codepoints as an identical placeholder glyph.
+    """
+    for ch in text:
+        cp = ord(ch)
+        if 0xAC00 <= cp <= 0xD7AF or 0x1100 <= cp <= 0x11FF or 0x3130 <= cp <= 0x318F:
+            return '가', '나'   # Hangul
+        if 0x3040 <= cp <= 0x309F:
+            return 'あ', 'い'   # Hiragana
+        if 0x30A0 <= cp <= 0x30FF:
+            return 'ア', 'イ'   # Katakana
+        if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
+            return '中', '文'   # CJK Unified
+    return '가', '나'
+
+
+def _font_can_render_cjk(font, sample_pair: tuple = ('가', '나')) -> bool:
+    """Check font has real CJK glyphs by comparing two distinct characters.
+
+    .notdef boxes produced for missing codepoints are pixel-identical,
+    regardless of which character is requested. If both chars render the
+    same pixels the font lacks those glyphs.
+    """
+    try:
+        c1, c2 = sample_pair
+        test_path = getattr(font, 'path', None)
+        size = 30
+
+        def _render(ch):
+            img = Image.new("L", (size * 2, size * 2), 0)
+            f = ImageFont.truetype(test_path, size) if test_path else font
+            ImageDraw.Draw(img).text((2, 2), ch, font=f, fill=255)
+            return bytes(img.tobytes())
+
+        r1, r2 = _render(c1), _render(c2)
+        if r1 == r2:
+            return False   # identical → .notdef for both
+        # Sanity: at least 1% lit pixels so two different blanks don't pass
+        lit = sum(1 for b in r1 if b > 20)
+        return lit > (size * 2) ** 2 * 0.01
+    except Exception:
+        return False
+
+
+def find_font(size, preferred_path=None, text_hint: str = ""):
+    need_cjk = _has_cjk(text_hint)
+    cjk_pair = _cjk_test_pair(text_hint) if need_cjk else ('가', '나')
+
+    def _try(path: str):
+        if not os.path.exists(path):
+            return None
         try:
-            return ImageFont.truetype(preferred_path, size)
+            f = ImageFont.truetype(path, size)
+            if need_cjk and not _font_can_render_cjk(f, cjk_pair):
+                return None
+            return f
         except Exception:
-            pass
-    for path in FONT_CANDIDATES:
+            return None
+
+    # Preferred font — skip if it can't render CJK when needed
+    if preferred_path:
+        f = _try(preferred_path)
+        if f:
+            print(f"[burn] font: {preferred_path}", file=sys.stderr)
+            return f
+        if need_cjk:
+            print(f"[burn] '{os.path.basename(preferred_path)}' tidak support CJK, cari font alternatif",
+                  file=sys.stderr)
+
+    candidates = (FONT_CANDIDATES_CJK + FONT_CANDIDATES) if need_cjk else FONT_CANDIDATES
+    for path in candidates:
+        f = _try(path)
+        if f:
+            print(f"[burn] font: {path}", file=sys.stderr)
+            return f
+
+    # Last resort without CJK verification (something is better than .notdef boxes)
+    for path in (FONT_CANDIDATES_CJK + FONT_CANDIDATES):
         if os.path.exists(path):
             try:
-                return ImageFont.truetype(path, size)
+                f = ImageFont.truetype(path, size)
+                print(f"[burn] font (no-verify fallback): {path}", file=sys.stderr)
+                return f
             except Exception:
                 continue
+
+    print("[burn] font: PIL default", file=sys.stderr)
     return ImageFont.load_default()
 
 def emit_progress(pct: int) -> None:
@@ -124,7 +260,8 @@ def _split_word_by_chars(draw, word, font, max_width) -> list[str]:
     return parts or [word]
 
 
-def wrap_text(text, font, max_width, draw):
+def _wrap_paragraph(text, font, max_width, draw):
+    """Word-wrap a single paragraph (no newlines) to fit max_width."""
     words = text.split()
     lines, current = [], []
     for word in words:
@@ -134,7 +271,6 @@ def wrap_text(text, font, max_width, draw):
         else:
             if current:
                 lines.append(" ".join(current))
-            # Word itself might be wider than max_width — split by character
             if _measure_text(draw, word, font) > max_width:
                 parts = _split_word_by_chars(draw, word, font, max_width)
                 lines.extend(parts[:-1])
@@ -144,6 +280,14 @@ def wrap_text(text, font, max_width, draw):
     if current:
         lines.append(" ".join(current))
     return lines or [""]
+
+
+def wrap_text(text, font, max_width, draw):
+    """Wrap text preserving explicit \\n line breaks (used for bilingual subtitles)."""
+    result = []
+    for paragraph in text.split("\n"):
+        result.extend(_wrap_paragraph(paragraph, font, max_width, draw))
+    return result or [""]
 
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip("#")
@@ -231,7 +375,10 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
         style = {}
     w, h, fps, total_frames = get_video_info(input_path)
     actual_size = font_size if font_size > 0 else max(26, h // 22)
-    font   = find_font(actual_size, font_path)
+
+    # Scan all subtitle text + title to detect CJK/Hangul — pick font accordingly
+    all_text = " ".join(e.get("text", "") for e in entries) + " " + title
+    font   = find_font(actual_size, font_path, text_hint=all_text)
     line_h = actual_size + 8
     frame_bytes = w * h * 3
     # Emit roughly one progress update per percent (min every 10 frames)
@@ -239,7 +386,7 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
 
     has_title = bool(title and title.strip())
     actual_title_size = title_font_size if title_font_size > 0 else max(32, h // 18)
-    title_font = find_font(actual_title_size, font_path) if has_title else None
+    title_font = find_font(actual_title_size, font_path, text_hint=title) if has_title else None
     title_style = {"titleColor": title_color}
 
     decode = subprocess.Popen(
