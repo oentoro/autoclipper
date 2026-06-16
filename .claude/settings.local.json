@@ -44,7 +44,10 @@
       "Bash(screencapture -x /tmp/autoclipper-screen.png)",
       "Bash(echo \"exit: $?\")",
       "Bash(read f *)",
-      "Read(//System/Library/Fonts/**)"
+      "Read(//System/Library/Fonts/**)",
+      "Bash(/Users/oentoro/.autoclipper/venv/bin/yt-dlp --newline --no-colors --progress --simulate -f \"bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\" \"https://www.youtube.com/watch?v=dQw4w9WgXcQ\")",
+      "Bash(/Users/oentoro/.autoclipper/venv/bin/yt-dlp *)",
+      "Bash(echo \"EXIT=$?\")"
     ]
   }
 }

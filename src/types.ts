@@ -40,6 +40,8 @@ export interface YtDownloadProgress {
   speed: string;
   eta: string;
   phase: "downloading" | "merging" | "done";
+  downloaded: string;
+  total: string;
 }
 
 export interface DownloadProgress {

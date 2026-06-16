@@ -320,11 +320,28 @@ body {
   max-width: 420px;
 }
 .yt-progress-pct {
-  font-size: 32px;
+  font-size: 20px;
   font-weight: 700;
   color: var(--text1);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.5px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.yt-speed-main {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.yt-size-main {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
 }
 .yt-progress-meta {
   display: flex;

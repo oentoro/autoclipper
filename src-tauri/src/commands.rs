@@ -131,10 +131,12 @@ pub struct ProcessCancelState {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct YtDownloadProgress {
-    pub percent: f32,
-    pub speed:   String,
-    pub eta:     String,
-    pub phase:   String, // "downloading" | "merging" | "done"
+    pub percent:   f32,
+    pub speed:     String,
+    pub eta:       String,
+    pub phase:     String,     // "downloading" | "merging" | "done"
+    pub downloaded: String,    // e.g. "10.45MiB"
+    pub total:     String,     // e.g. "45.67MiB"
 }
 
 #[derive(Default)]
@@ -490,6 +492,44 @@ fn parse_yt_eta(line: &str) -> String {
     line.find("ETA ").map(|pos| {
         line[pos + 4..].split_whitespace().next().unwrap_or("").to_string()
     }).unwrap_or_default()
+}
+
+fn parse_yt_total(line: &str) -> String {
+    // "[download]  23.4% of 45.67MiB at ..."  →  "45.67MiB"
+    line.find(" of ").map(|pos| {
+        line[pos + 4..].split_whitespace().next().unwrap_or("").trim_start_matches('~').to_string()
+    }).unwrap_or_default()
+}
+
+fn parse_size_bytes(s: &str) -> Option<f64> {
+    let table: &[(&str, f64)] = &[
+        ("GiB", 1024.0_f64 * 1024.0 * 1024.0),
+        ("MiB", 1024.0_f64 * 1024.0),
+        ("KiB", 1024.0_f64),
+        ("GB",  1_000_000_000.0),
+        ("MB",  1_000_000.0),
+        ("KB",  1_000.0),
+        ("B",   1.0),
+    ];
+    for (suffix, mult) in table {
+        if s.ends_with(suffix) {
+            let num = s[..s.len() - suffix.len()].parse::<f64>().ok()?;
+            return Some(num * mult);
+        }
+    }
+    None
+}
+
+fn format_bytes(bytes: f64) -> String {
+    if bytes >= 1024.0_f64 * 1024.0 * 1024.0 {
+        format!("{:.2}GiB", bytes / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024.0_f64 * 1024.0 {
+        format!("{:.2}MiB", bytes / (1024.0 * 1024.0))
+    } else if bytes >= 1024.0_f64 {
+        format!("{:.2}KiB", bytes / 1024.0)
+    } else {
+        format!("{:.0}B", bytes)
+    }
 }
 
 /// Turn a GGUF filename stem into a readable display name.
@@ -2220,42 +2260,57 @@ pub async fn download_youtube(
 
     if let Some(pid) = child.id() { *cancel.pid.lock().unwrap() = Some(pid); }
 
-    // Stream stderr → progress events
-    if let Some(stderr) = child.stderr.take() {
-        let app_clone = app.clone();
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let prog = if line.starts_with("[download]") && line.contains('%') {
-                    Some(YtDownloadProgress {
-                        percent: parse_yt_percent(&line).unwrap_or(0.0),
-                        speed:   parse_yt_speed(&line),
-                        eta:     parse_yt_eta(&line),
-                        phase:   "downloading".to_string(),
-                    })
-                } else if line.starts_with("[Merger]") || line.contains("Merging formats") {
-                    Some(YtDownloadProgress {
-                        percent: 99.0, speed: String::new(),
-                        eta: String::new(), phase: "merging".to_string(),
-                    })
-                } else { None };
-                if let Some(p) = prog { let _ = app_clone.emit("yt-download-progress", p); }
-            }
-        });
-    }
-
-    // Read stdout (filepath from --print after_move:filepath)
+    // yt-dlp sends ALL output ([download] progress, [Merger], filepath) to stdout.
+    // stderr only carries warnings/errors. Read stdout for both progress events
+    // and the final filepath printed by --print after_move:filepath.
     let stdout_task = if let Some(stdout) = child.stdout.take() {
+        let app_clone = app.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             let mut last = String::new();
             while let Ok(Some(line)) = reader.next_line().await {
                 let t = line.trim().to_string();
-                if !t.is_empty() { last = t; }
+                if t.is_empty() { continue; }
+                let prog = if t.starts_with("[download]") && t.contains('%') {
+                    let pct   = parse_yt_percent(&t).unwrap_or(0.0);
+                    let total = parse_yt_total(&t);
+                    let downloaded = parse_size_bytes(&total)
+                        .map(|tb| format_bytes(tb * (pct as f64 / 100.0)))
+                        .unwrap_or_default();
+                    Some(YtDownloadProgress {
+                        percent: pct,
+                        speed:   parse_yt_speed(&t),
+                        eta:     parse_yt_eta(&t),
+                        phase:   "downloading".to_string(),
+                        downloaded,
+                        total,
+                    })
+                } else if t.starts_with("[Merger]") || t.contains("Merging formats") {
+                    Some(YtDownloadProgress {
+                        percent: 99.0, speed: String::new(), eta: String::new(),
+                        phase: "merging".to_string(),
+                        downloaded: String::new(), total: String::new(),
+                    })
+                } else { None };
+                if let Some(p) = prog {
+                    let _ = app_clone.emit("yt-download-progress", p);
+                }
+                // filepath from --print after_move:filepath: a plain path line (no leading '[')
+                if !t.starts_with('[') && !t.starts_with("Deleting") && !t.starts_with("WARNING") {
+                    last = t;
+                }
             }
             last
         }))
     } else { None };
+
+    // Drain stderr (warnings only) so the pipe doesn't block
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(_)) = reader.next_line().await {}
+        });
+    }
 
     let status = child.wait().await
         .map_err(|e| format!("yt-dlp error: {e}"))?;
@@ -2275,6 +2330,7 @@ pub async fn download_youtube(
 
     let _ = app.emit("yt-download-progress", YtDownloadProgress {
         percent: 100.0, speed: String::new(), eta: String::new(), phase: "done".to_string(),
+        downloaded: String::new(), total: String::new(),
     });
 
     Ok(filepath)
