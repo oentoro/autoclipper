@@ -47,7 +47,13 @@
       "Read(//System/Library/Fonts/**)",
       "Bash(/Users/oentoro/.autoclipper/venv/bin/yt-dlp --newline --no-colors --progress --simulate -f \"bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\" \"https://www.youtube.com/watch?v=dQw4w9WgXcQ\")",
       "Bash(/Users/oentoro/.autoclipper/venv/bin/yt-dlp *)",
-      "Bash(echo \"EXIT=$?\")"
+      "Bash(echo \"EXIT=$?\")",
+      "Bash([ -f \"$PY\" ])",
+      "Bash(/Users/oentoro/Projects/autoclipper/src-tauri/vendor/python/bin/python3 -c 'import mlx_whisper; print\\('\\\\''mlx_whisper OK:'\\\\'', mlx_whisper.__file__\\)')",
+      "Bash(/Users/oentoro/.autoclipper/venv/bin/python3 -c 'import mlx_whisper; print\\('\\\\''mlx_whisper OK:'\\\\'', mlx_whisper.__file__\\)')",
+      "Bash(/Users/oentoro/.autoclipper/venv/bin/python3 -c 'import mlx; print\\('\\\\''mlx OK'\\\\''\\)')",
+      "Bash(/Users/oentoro/.autoclipper/venv/bin/pip list *)",
+      "Bash(rtk git *)"
     ]
   }
 }
