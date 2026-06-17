@@ -196,6 +196,7 @@ const dict = {
     captionBtnRegenerate: "Buat Ulang",
     captionError: "Gagal membuat caption. Pastikan model AI sudah dikonfigurasi.",
     captionBtnRetry: "Coba Lagi",
+    captionNoSegments: "Tidak ada segmen terpilih untuk membuat caption.",
     // ── Language toggle ───────────────────────────────────────────────────────
     langToggle: "🇬🇧 EN",
   },
@@ -370,6 +371,7 @@ const dict = {
     captionBtnRegenerate: "Regenerate",
     captionError: "Failed to generate caption. Make sure AI model is configured.",
     captionBtnRetry: "Try Again",
+    captionNoSegments: "No segments selected to generate caption.",
     langToggle: "🇮🇩 ID",
   },
 } as const;

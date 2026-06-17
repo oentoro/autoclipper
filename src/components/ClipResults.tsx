@@ -31,10 +31,11 @@ export default function ClipResults({
   const [caption, setCaption] = useState<CaptionResult | null>(null);
   const [captionTab, setCaptionTab] = useState<"tiktok" | "instagram">("tiktok");
   const [copied, setCopied] = useState(false);
+  const [captionError, setCaptionError] = useState("");
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!result || loading || selectedSegments.length === 0) return;
+    if (!result || loading) return;
     generateCaption();
   }, [result]);
 
@@ -48,7 +49,13 @@ export default function ClipResults({
   }, []);
 
   async function generateCaption() {
+    if (selectedSegments.length === 0) {
+      setCaptionError(t("captionNoSegments"));
+      setCaptionState("error");
+      return;
+    }
     setCaptionState("loading");
+    setCaptionError("");
     setCopied(false);
     if (copiedTimerRef.current !== null) {
       clearTimeout(copiedTimerRef.current);
@@ -63,7 +70,8 @@ export default function ClipResults({
       });
       setCaption(res);
       setCaptionState("done");
-    } catch {
+    } catch (e) {
+      setCaptionError(String(e));
       setCaptionState("error");
     }
   }
@@ -153,8 +161,7 @@ export default function ClipResults({
         </button>
       </div>
 
-      {selectedSegments.length > 0 && (
-        <div className="caption-panel">
+      <div className="caption-panel">
           <div className="caption-header">
             <span className="caption-title">{t("captionTitle")}</span>
             <button
@@ -175,7 +182,7 @@ export default function ClipResults({
 
           {captionState === "error" && (
             <div className="caption-error">
-              <span>{t("captionError")}</span>
+              <span>{captionError || t("captionError")}</span>
               <button className="btn btn-sm btn-secondary" onClick={generateCaption}>
                 {t("captionBtnRetry")}
               </button>
@@ -216,7 +223,6 @@ export default function ClipResults({
             </>
           )}
         </div>
-      )}
 
       <div className="results-actions">
         <button className="btn btn-secondary" onClick={onBack}>
