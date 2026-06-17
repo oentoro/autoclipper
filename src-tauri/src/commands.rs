@@ -803,7 +803,7 @@ async fn ensure_llama_server(
     let mut args = vec![
         "--model".to_string(), model_path.to_string(),
         "--port".to_string(), LLAMA_PORT.to_string(),
-        "--ctx-size".to_string(), "8192".to_string(),
+        "--ctx-size".to_string(), "32768".to_string(),
         "--threads".to_string(), cpu_threads,
         "--parallel".to_string(), "1".to_string(),
         "--log-disable".to_string(),
