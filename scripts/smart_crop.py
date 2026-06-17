@@ -51,14 +51,26 @@ def emit_status(msg: str) -> None:
 # ── InsightFace SCRFD (frontal + profil 0°–90°+) ─────────────────────────────
 
 def _load_insightface():
-    """Return InsightFace FaceAnalysis app (detection only), or None if unavailable."""
+    """Return (FaceAnalysis app, device_label) or (None, None) if unavailable."""
     try:
         from insightface.app import FaceAnalysis
+
+        ctx_id = -1          # default: CPU
+        device_label = "CPU"
+        try:
+            import onnxruntime as ort
+            providers = ort.get_available_providers()
+            if "CUDAExecutionProvider" in providers:
+                ctx_id = 0
+                device_label = "CUDA GPU"
+        except Exception:
+            pass
+
         app = FaceAnalysis(name="buffalo_sc", allowed_modules=["detection"])
-        app.prepare(ctx_id=-1, det_size=(640, 640))  # -1 = CPU
-        return app
+        app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+        return app, device_label
     except Exception:
-        return None
+        return None, None
 
 
 def _detect_insightface(frame, app) -> list[dict]:
@@ -231,6 +243,11 @@ def _load_yunet(frame_w: int, frame_h: int):
         return None
     if not _download_yunet():
         return None
+
+    cuda_ok = hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0
+    backend = cv2.dnn.DNN_BACKEND_CUDA if cuda_ok else cv2.dnn.DNN_BACKEND_DEFAULT
+    target  = cv2.dnn.DNN_TARGET_CUDA  if cuda_ok else cv2.dnn.DNN_TARGET_CPU
+
     try:
         det = cv2.FaceDetectorYN.create(
             _yunet_model_path(), "",
@@ -238,11 +255,23 @@ def _load_yunet(frame_w: int, frame_h: int):
             score_threshold=0.55,
             nms_threshold=0.3,
             top_k=100,
+            backend_id=backend,
+            target_id=target,
         )
         return det
-    except Exception as e:
-        emit_status(f"[smart_crop] YuNet load gagal ({e}), pakai cascade fallback.")
-        return None
+    except Exception:
+        # CUDA backend gagal (opencv tanpa CUDA) — fallback ke CPU
+        try:
+            return cv2.FaceDetectorYN.create(
+                _yunet_model_path(), "",
+                (frame_w, frame_h),
+                score_threshold=0.55,
+                nms_threshold=0.3,
+                top_k=100,
+            )
+        except Exception as e:
+            emit_status(f"[smart_crop] YuNet load gagal ({e}), pakai cascade fallback.")
+            return None
 
 
 # ── Non-max suppression ───────────────────────────────────────────────────────
@@ -431,21 +460,24 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float,
     fw_px = test_frame.shape[1] if ret else 1280
 
     # Detector priority: InsightFace > MediaPipe > YuNet > Haar cascade
-    insight_app  = _load_insightface()
+    insight_app, insight_device = _load_insightface()
     mp_detector  = None
     yunet        = None
+    cuda_yunet   = False
     if insight_app is not None:
-        emit_status("[smart_crop] Detector: InsightFace SCRFD (frontal + profil 0°–90°, presisi tertinggi)")
+        emit_status(f"[smart_crop] Detector: InsightFace SCRFD — {insight_device} (frontal + profil 0°–90°)")
     else:
         mp_detector = _load_mediapipe()
         if mp_detector is not None:
-            emit_status("[smart_crop] Detector: MediaPipe (deep learning, presisi tinggi)")
+            emit_status("[smart_crop] Detector: MediaPipe — CPU (deep learning, presisi tinggi)")
         else:
             yunet = _load_yunet(fw_px, fh_px)
             if yunet is not None:
-                emit_status("[smart_crop] Detector: YuNet (frontal + profil)")
+                cuda_yunet = hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0
+                device_label = "CUDA GPU" if cuda_yunet else "CPU"
+                emit_status(f"[smart_crop] Detector: YuNet — {device_label} (frontal + profil)")
             else:
-                emit_status("[smart_crop] Detector: Haar cascade (fallback) — install insightface untuk presisi lebih baik")
+                emit_status("[smart_crop] Detector: Haar cascade — CPU (fallback) — install insightface untuk presisi lebih baik")
 
     cascade_front   = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     cascade_profile = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
