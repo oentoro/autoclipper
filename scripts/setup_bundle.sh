@@ -55,7 +55,7 @@ BUNDLED_PY="$VENDOR/python/bin/python3"
 # ── Python packages ───────────────────────────────────────────────────────────
 echo "[2/5] Installing Python packages..."
 "$BUNDLED_PY" -m pip install --quiet --upgrade pip
-"$BUNDLED_PY" -m pip install --quiet faster-whisper Pillow opencv-python
+"$BUNDLED_PY" -m pip install --quiet faster-whisper Pillow opencv-python mediapipe insightface onnxruntime
 
 # On Apple Silicon: install mlx-whisper for 5-15x faster transcription
 if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
