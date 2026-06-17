@@ -53,7 +53,10 @@
       "Bash(/Users/oentoro/.autoclipper/venv/bin/python3 -c 'import mlx_whisper; print\\('\\\\''mlx_whisper OK:'\\\\'', mlx_whisper.__file__\\)')",
       "Bash(/Users/oentoro/.autoclipper/venv/bin/python3 -c 'import mlx; print\\('\\\\''mlx OK'\\\\''\\)')",
       "Bash(/Users/oentoro/.autoclipper/venv/bin/pip list *)",
-      "Bash(rtk git *)"
+      "Bash(rtk git *)",
+      "Bash(rustc --version)",
+      "Bash(npm --version)",
+      "Bash(xcode-select -p)"
     ]
   }
 }

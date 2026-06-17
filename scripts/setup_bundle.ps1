@@ -38,9 +38,9 @@ if (-not (Test-Path "$Vendor\python\python.exe")) {
 $BundledPy = "$Vendor\python\python.exe"
 
 # ── Python packages ───────────────────────────────────────────────────────────
-Write-Host "[2/5] Installing faster-whisper + Pillow + opencv-python..."
+Write-Host "[2/5] Installing Python packages..."
 & $BundledPy -m pip install --quiet --upgrade pip
-& $BundledPy -m pip install --quiet faster-whisper Pillow opencv-python
+& $BundledPy -m pip install --quiet faster-whisper Pillow opencv-python mediapipe insightface onnxruntime
 Write-Host "  [OK] Packages installed"
 
 # ── llama-server ──────────────────────────────────────────────────────────────
