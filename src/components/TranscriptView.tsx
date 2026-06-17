@@ -220,6 +220,7 @@ export default function TranscriptView({
     return (
       <p
         className="segment-text"
+        onClick={e => e.stopPropagation()}
         onDoubleClick={e => startEdit(seg, e)}
         title={t("segmentEditHint")}
       >
