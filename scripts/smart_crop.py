@@ -86,11 +86,26 @@ def _detect_insightface(frame, app) -> list[dict]:
             nose_x = int(kps[2][0])
             lm = kps[3]   # left mouth corner
             rm = kps[4]   # right mouth corner
-            # Expand mouth region — works for both frontal and profile views
-            mx = max(0, int(min(lm[0], rm[0])) - 8)
-            my = max(0, int(min(lm[1], rm[1])) - 8)
-            mw = max(16, int(abs(rm[0] - lm[0])) + 16)
-            mh = max(14, int(abs(rm[1] - lm[1])) + 22)
+
+            # Estimate face orientation: ratio of nose offset from bbox center
+            # relative to half-width. 0 = fully frontal, ~1 = full profile.
+            profile_ratio = abs(nose_x - (bx + bw / 2.0)) / (bw / 2.0 + 1e-6)
+
+            if profile_ratio > 0.30:
+                # Profile face: landmark-based mouth region is unreliable (two
+                # corners project nearly on top of each other). Use the lower
+                # face / jaw region instead — the jaw drop during speech is the
+                # dominant visible motion from the side.
+                mx = bx
+                my = max(0, by + int(bh * 0.55))
+                mw = bw
+                mh = max(20, int(bh * 0.40))
+            else:
+                # Frontal / slight tilt: precise landmark-based mouth region.
+                mx = max(0, int(min(lm[0], rm[0])) - 8)
+                my = max(0, int(min(lm[1], rm[1])) - 8)
+                mw = max(16, int(abs(rm[0] - lm[0])) + 16)
+                mh = max(14, int(abs(rm[1] - lm[1])) + 22)
         else:
             nose_x = bx + bw // 2
             mx, my, mw, mh = bx, by + int(bh * 0.65), bw, max(8, int(bh * 0.30))
@@ -348,7 +363,18 @@ def _mouth_motion(gray_curr, gray_prev, mouth: tuple) -> float:
     p = gray_prev[my:my + mh, mx:mx + mw]
     if c.size == 0 or c.shape != p.shape:
         return 0.0
-    return float(cv2.absdiff(c, p).mean())
+    diff = cv2.absdiff(c, p).astype(np.float32)
+    # Gradient-weighted diff: amplifies motion at lip/jaw edges, suppresses
+    # flat background noise. x-gradient catches jaw shift (profile view);
+    # y-gradient catches lip opening (frontal view).
+    gx = cv2.Sobel(c, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(c, cv2.CV_32F, 0, 1, ksize=3)
+    grad_mag = np.sqrt(gx * gx + gy * gy)
+    mean_grad = float(grad_mag.mean())
+    if mean_grad > 1.0:
+        weight = np.clip(grad_mag / (mean_grad + 1e-6), 0.5, 2.5)
+        return float((diff * weight).mean())
+    return float(diff.mean())
 
 
 def _sharpness(gray, bbox: tuple) -> float:
