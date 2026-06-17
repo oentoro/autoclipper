@@ -793,17 +793,32 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
           />
         )}
 
-        {(step === "clipping" || step === "done") && (
-          <ClipResults
-            result={clipResult}
-            loading={step === "clipping"}
-            onBack={() => setStep("transcript")}
-            selectedSegments={segments.filter(s => selectedIndices.has(s.index))}
-            detectedLanguage={detectedLanguage}
-            modelPath={selectedLlm?.source === "local" ? selectedLlm.path : ""}
-            ollamaModel={selectedLlm?.source === "ollama" ? selectedLlm.ollama_model : ""}
-          />
-        )}
+        {(step === "clipping" || step === "done") && (() => {
+          // Gabungkan segmen dari checkbox + segmen dalam rentang manual clip,
+          // deduplikasi berdasarkan index, urutkan berdasarkan waktu.
+          const seen = new Set<number>();
+          const captionSegments = [
+            ...segments.filter(s => selectedIndices.has(s.index)),
+            ...segments.filter(s =>
+              manualClips.some(mc => s.start >= mc.startSec && s.end <= mc.endSec)
+            ),
+          ].filter(s => {
+            if (seen.has(s.index)) return false;
+            seen.add(s.index);
+            return true;
+          }).sort((a, b) => a.start - b.start);
+          return (
+            <ClipResults
+              result={clipResult}
+              loading={step === "clipping"}
+              onBack={() => setStep("transcript")}
+              selectedSegments={captionSegments}
+              detectedLanguage={detectedLanguage}
+              modelPath={selectedLlm?.source === "local" ? selectedLlm.path : ""}
+              ollamaModel={selectedLlm?.source === "ollama" ? selectedLlm.ollama_model : ""}
+            />
+          );
+        })()}
       </main>
 
       {showModelManager && (
