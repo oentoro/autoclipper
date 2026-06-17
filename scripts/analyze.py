@@ -40,6 +40,23 @@ def build_classify_prompt(segments: list) -> str:
     )
 
 
+def build_caption_prompt(segments: list, language: str) -> str:
+    text = "\n".join(f"[{s['index']}] {s['start_time']}: {s['text']}" for s in segments)
+    lang_map = {"id": "Bahasa Indonesia", "en": "English"}
+    lang_name = lang_map.get(language, "English")
+    return (
+        f"Kamu adalah copywriter media sosial profesional.\n"
+        f"Buat caption untuk video berikut berdasarkan transkripnya.\n\n"
+        f"Bahasa caption: {lang_name}\n\n"
+        f"Transkrip klip:\n{text}\n\n"
+        "Buat dua versi caption:\n"
+        "1. TikTok (pendek): hook 1 kalimat kuat, 1-2 kalimat isi, 5-7 hashtag relevan\n"
+        "2. Instagram (panjang): hook, 2-3 paragraf isi, call-to-action, 15-20 hashtag\n\n"
+        "Balas HANYA dengan JSON valid tanpa teks lain:\n"
+        '{"caption_short":"...","caption_long":"...","hashtags_short":["#tag1"],"hashtags_long":["#tag1","#tag2"]}'
+    )
+
+
 # ── Backends ───────────────────────────────────────────────────────────────────
 
 def infer_llamacpp(model_path: str, prompt: str) -> str:
@@ -81,11 +98,12 @@ def infer_ollama(base_url: str, model_name: str, prompt: str) -> str:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("task", choices=["analyze", "classify"])
+    parser.add_argument("task", choices=["analyze", "classify", "caption"])
     parser.add_argument("--segments-file", required=True, help="Path to JSON file with segments")
     parser.add_argument("--model-path",    default="",   help="Path to local .gguf model file")
     parser.add_argument("--ollama-url",    default="http://localhost:11434")
     parser.add_argument("--ollama-model",  default="gemma4:latest")
+    parser.add_argument("--language",      default="id", help="Language code: id or en")
     args = parser.parse_args()
 
     with open(args.segments_file, encoding="utf-8") as f:
@@ -95,8 +113,12 @@ if __name__ == "__main__":
         print(json.dumps({"error": "Tidak ada segmen"}), file=sys.stderr)
         sys.exit(1)
 
-    prompt = build_analyze_prompt(segments) if args.task == "analyze" \
-             else build_classify_prompt(segments)
+    if args.task == "analyze":
+        prompt = build_analyze_prompt(segments)
+    elif args.task == "classify":
+        prompt = build_classify_prompt(segments)
+    else:
+        prompt = build_caption_prompt(segments, args.language)
 
     try:
         if args.model_path and os.path.isfile(args.model_path):
