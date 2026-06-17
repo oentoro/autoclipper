@@ -168,7 +168,7 @@ export default function ClipResults({
 
           {captionState === "loading" && (
             <div className="caption-loading">
-              <div className="spinner small" />
+              <div className="spinner-sm" />
               <span>{t("captionGenerating")}</span>
             </div>
           )}

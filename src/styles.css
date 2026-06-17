@@ -2141,5 +2141,4 @@ body {
   word-break: break-word;
 }
 .caption-footer { display: flex; justify-content: flex-end; }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
 ::-webkit-scrollbar-thumb:hover { background: #3e4562; }
