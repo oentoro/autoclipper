@@ -393,6 +393,16 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
          title="", title_font_size=0, title_color="#ffffff"):
     if style is None:
         style = {}
+
+    # ── Diagnostic: print first 10 entries to stderr ──────────────────────
+    if entries:
+        import sys as _sys
+        n_show = min(10, len(entries))
+        _sys.stderr.write(f"[burn] total entries: {len(entries)}, showing first {n_show}:\n")
+        for i, e in enumerate(entries[:n_show]):
+            _sys.stderr.write(f"  [{i}] start={e['start']:.3f} end={e['end']:.3f} text={e['text'][:80]}\n")
+        _sys.stderr.flush()
+
     w, h, fps, total_frames = get_video_info(input_path)
     actual_size = font_size if font_size > 0 else max(26, h // 22)
 

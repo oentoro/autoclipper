@@ -13,6 +13,8 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
   const [installing, setInstalling] = useState<Set<string>>(new Set());
   const [venvCreating, setVenvCreating] = useState(false);
   const [venvError, setVenvError] = useState<string | null>(null);
+  const [installingAll, setInstallingAll] = useState(false);
+  const [installAllError, setInstallAllError] = useState<string | null>(null);
 
   async function handleInstall(name: string, installCmd: string) {
     setInstalling((prev) => new Set(prev).add(name));
@@ -39,6 +41,59 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
       setVenvError(String(e));
     } finally {
       setVenvCreating(false);
+    }
+  }
+
+  async function handleInstallAll() {
+    setInstallingAll(true);
+    setInstallAllError(null);
+
+    try {
+      // Step 1: create venv first if missing
+      const venvDep = status.checks.find(
+        (c) => c.install_cmd === "__create_venv__" && !c.ok
+      );
+      if (venvDep) {
+        await invoke("create_venv");
+      }
+
+      // Step 2: refresh deps — after venv creation, pip commands are clean
+      const fresh = await invoke<DepsStatus>("check_dependencies");
+
+      // Step 3: collect missing REQUIRED deps (skip venv sentinel, skip Scripts)
+      const missing = fresh.checks.filter(
+        (c) =>
+          !c.optional &&
+          !c.ok &&
+          c.install_cmd &&
+          c.install_cmd !== "__create_venv__"
+      );
+
+      // Dedup (ffmpeg + ffprobe share the same install command)
+      const seen = new Set<string>();
+      const commands: string[] = [];
+      for (const dep of missing) {
+        const cmd = dep.install_cmd!;
+        if (!seen.has(cmd)) {
+          seen.add(cmd);
+          commands.push(cmd);
+        }
+      }
+
+      if (commands.length === 0) {
+        onRetry();
+        return;
+      }
+
+      // Step 4: run all in one terminal
+      const combined = commands.join(" && ");
+      await invoke("install_dependency", { installCmd: combined });
+    } catch (e) {
+      setInstallAllError(String(e));
+    } finally {
+      setInstallingAll(false);
+      // give the terminal a moment to open, then refresh
+      setTimeout(() => onRetry(), 1500);
     }
   }
 
@@ -125,13 +180,23 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
         <div className="deps-list">
           {optional.map((dep) => {
             const isInstalling = installing.has(dep.name);
+            const isVenvAction = dep.install_cmd === "__create_venv__";
             return (
               <div key={dep.name} className={`dep-item ${dep.ok ? "ok" : "warn"}`}>
                 <span className="dep-icon">{dep.ok ? "✓" : "○"}</span>
                 <div className="dep-info">
                   <div className="dep-name-row">
                     <span className="dep-name">{dep.name}</span>
-                    {!dep.ok && dep.install_cmd && (
+                    {!dep.ok && isVenvAction && (
+                      <button
+                        className="btn btn-install btn-sm"
+                        onClick={handleCreateVenv}
+                        disabled={venvCreating}
+                      >
+                        {venvCreating ? "Membuat environment..." : "+ Buat Environment"}
+                      </button>
+                    )}
+                    {!dep.ok && dep.install_cmd && !isVenvAction && (
                       <button
                         className="btn btn-install btn-sm"
                         onClick={() => handleInstall(dep.name, dep.install_cmd!)}
@@ -157,7 +222,10 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
                   {!dep.ok && dep.error && (
                     <span className="dep-error">{dep.error}</span>
                   )}
-                  {!dep.ok && dep.install_cmd && (
+                  {venvError && isVenvAction && (
+                    <span className="dep-error">{venvError}</span>
+                  )}
+                  {!dep.ok && dep.install_cmd && !isVenvAction && (
                     <code className="dep-cmd">{dep.install_cmd}</code>
                   )}
                 </div>
@@ -180,10 +248,27 @@ export default function DepsCheck({ status, onRetry, onContinue }: Props) {
         )}
 
         {!status.all_required_ok && (
-          <p className="deps-install-hint">
-            Klik "↓ Install" untuk membuka terminal dan menjalankan installer secara otomatis.
-            Setelah selesai, klik "Periksa Ulang".
-          </p>
+          <>
+            <p className="deps-install-hint">
+              Klik "↓ Install Semua" untuk membuat venv dan menginstall semua
+              dependensi wajib dalam satu terminal, atau klik "↓ Install" per
+              dependensi.
+            </p>
+            <p className="deps-install-hint" style={{ marginTop: 8 }}>
+              <button
+                className="btn btn-primary"
+                onClick={handleInstallAll}
+                disabled={installingAll}
+              >
+                {installingAll ? "Mempersiapkan..." : "↓ Install Semua"}
+              </button>
+              {installAllError && (
+                <span className="dep-error" style={{ marginLeft: 12 }}>
+                  {installAllError}
+                </span>
+              )}
+            </p>
+          </>
         )}
 
         <div className="deps-actions">

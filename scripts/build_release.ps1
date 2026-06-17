@@ -28,7 +28,8 @@ $TempConfig = [System.IO.Path]::GetTempFileName() + ".json"
 $ExtraConfig | Set-Content -Path $TempConfig -Encoding UTF8
 
 try {
-    npm run tauri build -- --config $TempConfig
+    $TauriCli = Resolve-Path "$ScriptDir\..\node_modules\.bin\tauri.cmd"
+    cmd /c "$TauriCli build --config `"$TempConfig`""
 } finally {
     Remove-Item $TempConfig -Force -ErrorAction SilentlyContinue
 }

@@ -1049,17 +1049,24 @@ fn build_retimed_entries(
                         .map(|s| s.as_str())
                         .unwrap_or(&seg.text);
                     if orig == seg.text {
-                        // Not actually translated — show once
                         seg.text.clone()
                     } else {
                         format!("{}\n{}", orig, seg.text)
                     }
                 }
-                _ => seg.text.clone(), // "translated_only" or default
+                _ => seg.text.clone(),
             };
             entries.push(serde_json::json!({ "start": sub_start, "end": sub_end, "text": text }));
         }
         cursor += g_dur;
+    }
+    // Diagnostic
+    if !entries.is_empty() {
+        let n = entries.len().min(5);
+        eprintln!("[retime] total entries: {}, first {}:", entries.len(), n);
+        for (i, e) in entries.iter().take(n).enumerate() {
+            eprintln!("  [{}] start={:.3} end={:.3} text={:.80}", i, e["start"].as_f64().unwrap_or(-1.0), e["end"].as_f64().unwrap_or(-1.0), e["text"].as_str().unwrap_or(""));
+        }
     }
     entries
 }
