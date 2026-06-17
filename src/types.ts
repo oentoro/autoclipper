@@ -35,6 +35,13 @@ export interface ClassifyResult {
   sections: Section[];
 }
 
+export interface CaptionResult {
+  caption_short: string;
+  caption_long: string;
+  hashtags_short: string[];
+  hashtags_long: string[];
+}
+
 export interface YtDownloadProgress {
   percent: number;
   speed: string;
