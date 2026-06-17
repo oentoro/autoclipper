@@ -258,7 +258,7 @@ def _compute_subtitle_layout(text, font, line_h, style, w, h):
         tw = _measure_text(_tmp, line, font)
         x = (w - tw) // 2
         x = max(margin + outline_w, min(x, w - margin - outline_w - tw))
-        result.append((line, x, y))
+        result.append((line, x, y, tw))
         y += line_h
     return result
 
@@ -369,7 +369,7 @@ def draw_subtitle(img, text, font, line_h, style):
         outline_w = int(style.get("outlineWidth", 2))
         text_rgb = hex_to_rgb(style.get("textColor", "#ffffff"))
         outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))
-        for line, x, y in layout:
+        for line, x, y, _ in layout:
             draw.text((x, y), line, font=font, fill=text_rgb,
                       stroke_width=outline_w,
                       stroke_fill=outline_rgb if outline_w > 0 else None)
@@ -427,6 +427,7 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
     _outline_w = int(style.get("outlineWidth", 2))
     _text_rgb = hex_to_rgb(style.get("textColor", "#ffffff"))
     _outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))
+    _box_rgb = hex_to_rgb(style.get("boxColor", "#000000"))
     _subtitle_cache: dict = {}
 
     # Precompute title layout once — title text never changes between frames
@@ -466,21 +467,33 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
             if needs_draw:
                 img = Image.frombytes("RGB", (w, h), chunk)
                 if text:
+                    # Cache layout (tiny list of tuples) — NOT the full overlay image
+                    # which was ~8MB per unique text and caused RAM blowup.
+                    if text not in _subtitle_cache:
+                        _subtitle_cache[text] = _compute_subtitle_layout(text, font, line_h, style, w, h)
+                    layout = _subtitle_cache[text]
                     if _use_alpha_path:
-                        if text not in _subtitle_cache:
-                            _subtitle_cache[text] = _build_subtitle_overlay(text, font, line_h, style, w, h)
-                        img = Image.alpha_composite(img.convert("RGBA"), _subtitle_cache[text]).convert("RGB")
+                        # Rebuild small overlay per frame using cached positions (no wrap_text).
+                        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+                        draw = ImageDraw.Draw(overlay)
+                        for line, x, y, tw in layout:
+                            pad_x, pad_y = 12, 5
+                            draw.rectangle([max(0, x - pad_x), y - pad_y,
+                                            min(w, x + tw + pad_x), y + line_h - 4],
+                                           fill=(*_box_rgb, _box_alpha))
+                            draw.text((x, y), line, font=font, fill=(*_text_rgb, 255),
+                                      stroke_width=_outline_w,
+                                      stroke_fill=(*_outline_rgb, 255) if _outline_w > 0 else None)
+                        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
                     else:
-                        if text not in _subtitle_cache:
-                            _subtitle_cache[text] = _compute_subtitle_layout(text, font, line_h, style, w, h)
                         draw = ImageDraw.Draw(img)
-                        for line, x, y in _subtitle_cache[text]:
+                        for line, x, y, _ in layout:
                             draw.text((x, y), line, font=font, fill=_text_rgb,
                                       stroke_width=_outline_w,
                                       stroke_fill=_outline_rgb if _outline_w > 0 else None)
                 if _title_layout:
                     draw = ImageDraw.Draw(img)
-                    for line, x, y in _title_layout:
+                    for line, x, y, _ in _title_layout:
                         draw.text((x, y), line, font=title_font, fill=_title_text_rgb,
                                   stroke_width=2, stroke_fill=(0, 0, 0))
                 encode.stdin.write(img.tobytes())
