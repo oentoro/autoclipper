@@ -667,11 +667,13 @@ Aturan: nama UNIK dan sangat spesifik (max 4 kata), bagian berurutan, mencakup s
 }
 
 fn split_long_sections(sections: Vec<Section>, segments: &[SrtSegment], max_secs: f64) -> Vec<Section> {
+    let seg_map: std::collections::HashMap<usize, &SrtSegment> =
+        segments.iter().map(|s| (s.index, s)).collect();
     let seg_time = |idx: usize| -> f64 {
-        segments.iter().find(|s| s.index == idx).map(|s| s.start).unwrap_or(0.0)
+        seg_map.get(&idx).map(|s| s.start).unwrap_or(0.0)
     };
     let seg_end = |idx: usize| -> f64 {
-        segments.iter().find(|s| s.index == idx).map(|s| s.end).unwrap_or(0.0)
+        seg_map.get(&idx).map(|s| s.end).unwrap_or(0.0)
     };
 
     let mut out: Vec<Section> = Vec::new();
@@ -1643,6 +1645,38 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         optional: false,
     });
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let mlx_ok = pkg_check("mlx_whisper", "mlx-whisper");
+        checks.push(DepCheck {
+            name: format!("mlx-whisper / GPU Apple Silicon ({source})"),
+            ok: mlx_ok,
+            path: None,
+            error: if !mlx_ok {
+                Some("mlx-whisper belum terinstall — transkrip akan pakai CPU, bukan GPU Apple Silicon. Install untuk akselerasi 5-15×.".to_string())
+            } else { None },
+            install_cmd: if !mlx_ok { Some(pip_install("mlx-whisper")) } else { None },
+            download_url: None,
+            optional: true,
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let dml_ok = pkg_check("torch_directml", "torch-directml");
+        checks.push(DepCheck {
+            name: "torch-directml / GPU AMD·Intel·NVIDIA (Windows)".to_string(),
+            ok: dml_ok,
+            path: None,
+            error: if !dml_ok {
+                Some("torch-directml belum terinstall — transkrip akan pakai CPU. Install untuk akselerasi GPU AMD/Intel/NVIDIA via DirectML.".to_string())
+            } else { None },
+            install_cmd: if !dml_ok { Some(pip_install("openai-whisper torch-directml")) } else { None },
+            download_url: None,
+            optional: true,
+        });
+    }
+
     let hf_hub_ok = pkg_check("huggingface_hub", "huggingface-hub");
     checks.push(DepCheck {
         name: format!("huggingface-hub ({source})"),
@@ -2104,8 +2138,9 @@ pub async fn clip_video(
     let ffprobe = find_ffprobe(v);
     let python = find_python(v);
 
+    let idx_set: std::collections::HashSet<usize> = selected_indices.iter().cloned().collect();
     let mut selected: Vec<&SrtSegment> = segments.iter()
-        .filter(|s| selected_indices.contains(&s.index)).collect();
+        .filter(|s| idx_set.contains(&s.index)).collect();
     selected.sort_by_key(|s| s.index);
 
     // Build groups from selected segments
@@ -2567,6 +2602,14 @@ pub async fn create_venv() -> Result<String, String> {
         .map_err(|e| format!("Gagal membuat virtual environment: {e}"))?;
 
     if output.status.success() {
+        // On Apple Silicon: install mlx-whisper for GPU transcription acceleration
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let pip = venv.join("bin").join("pip");
+            let _ = Command::new(&pip)
+                .args(["install", "--quiet", "mlx-whisper"])
+                .output();
+        }
         Ok(venv_str)
     } else {
         let err = String::from_utf8_lossy(&output.stderr);

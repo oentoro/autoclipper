@@ -199,6 +199,22 @@ def detect_device() -> tuple[str, str]:
         pass
     return "cpu", "int8"
 
+def _should_use_directml() -> bool:
+    """True jika Windows, tidak ada CUDA, dan ada GPU lewat DirectML (AMD/Intel/NVIDIA)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() > 0:
+            return False  # CUDA tersedia — faster-whisper+CUDA lebih cepat
+    except Exception:
+        pass
+    try:
+        import torch_directml
+        return torch_directml.device_count() > 0
+    except Exception:
+        return False
+
 def get_cpu_threads() -> int:
     cpu_count = os.cpu_count() or 4
     return max(4, cpu_count - 1)
@@ -372,6 +388,55 @@ def _transcribe_faster_whisper(audio_path: str, model_name: str, language: str |
     segments_out = _filter_hallucinations(segments_out)
     return segments_out, info.language or "unknown"
 
+# ── DirectML backend (Windows AMD / Intel / NVIDIA tanpa CUDA) ───────────────
+
+def _transcribe_directml(audio_path: str, model_name: str, language: str | None,
+                          beam_size: int, condition_prev: bool,
+                          word_timestamps: bool,
+                          total_duration: float = 0.0) -> tuple[list, str]:
+    import whisper, torch_directml, threading, time
+
+    dml = torch_directml.device()
+    result_box: list = [None, None]
+    done = threading.Event()
+
+    def worker():
+        try:
+            model = whisper.load_model(model_name, device=dml)
+        except Exception:
+            # 'large-v3-turbo' dikenal sebagai 'turbo' di openai-whisper lama
+            alt = {"large-v3-turbo": "turbo"}.get(model_name, model_name)
+            model = whisper.load_model(alt, device=dml)
+        try:
+            result_box[0] = model.transcribe(
+                audio_path,
+                language=language or None,
+                beam_size=beam_size if beam_size > 1 else None,
+                condition_on_previous_text=condition_prev,
+                word_timestamps=word_timestamps,
+                verbose=False,
+            )
+        except Exception as exc:
+            result_box[1] = exc
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    estimated_secs = max(1.0, total_duration / 4) if total_duration > 0 else 300.0
+    start = time.monotonic()
+    while not done.wait(timeout=0.8):
+        elapsed = time.monotonic() - start
+        emit_progress(min(95, int(elapsed / estimated_secs * 95)))
+
+    t.join()
+    if result_box[1] is not None:
+        raise result_box[1]
+
+    r = result_box[0]
+    segs = _filter_hallucinations(r["segments"])
+    return segs, r.get("language") or "unknown"
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 def transcribe(video_path: str, model_dir: str | None = None,
@@ -405,8 +470,24 @@ def transcribe(video_path: str, model_dir: str | None = None,
                 print(f"[transcribe] mlx-whisper gagal ({e}), fallback ke faster-whisper", file=sys.stderr)
                 use_mlx = False
 
-        if not use_mlx:
-            print(f"[transcribe] Backend: faster-whisper (CPU) — model: {model_name}", file=sys.stderr)
+        use_directml = False
+        if not use_mlx and _should_use_directml():
+            try:
+                print(f"[transcribe] Backend: openai-whisper + DirectML (AMD/Intel GPU) — model: {model_name}", file=sys.stderr)
+                segs_raw, detected_lang = _transcribe_directml(
+                    input_path, model_name, language,
+                    beam_size, condition_prev, need_words,
+                    total_duration=total_duration,
+                )
+                segs_wrapped = [_Seg(s) for s in segs_raw]
+                use_directml = True
+            except Exception as e:
+                print(f"[transcribe] DirectML gagal ({e}), fallback ke faster-whisper", file=sys.stderr)
+
+        if not use_mlx and not use_directml:
+            device, _ = detect_device()
+            backend_label = "CUDA" if device == "cuda" else "CPU"
+            print(f"[transcribe] Backend: faster-whisper ({backend_label}) — model: {model_name}", file=sys.stderr)
             segs_raw, detected_lang = _transcribe_faster_whisper(
                 input_path, model_name, language,
                 beam_size, use_batch, condition_prev, need_words, model_dir,

@@ -4,7 +4,7 @@ burn_subtitles.py <input_video> <entries_json_path> <output_video>
                   [--font-size N] [--font /path/to/font.ttf]
                   [--style '{"textColor":"#fff","outlineColor":"#000",...}']
 """
-import sys, json, subprocess, os, argparse
+import sys, json, subprocess, os, argparse, bisect
 from PIL import Image, ImageDraw, ImageFont
 import platform as _platform
 
@@ -228,11 +228,74 @@ def get_video_info(path):
     total_frames = int(duration * fps) if duration > 0 else 0
     return w, h, fps, total_frames
 
-def get_text_at(t, entries):
-    for entry in entries:
-        if entry["start"] <= t <= entry["end"]:
-            return entry["text"]
+def get_text_at(t, entries, _starts):
+    if not entries:
+        return None
+    i = bisect.bisect_right(_starts, t) - 1
+    if 0 <= i < len(entries) and entries[i]["end"] >= t:
+        return entries[i]["text"]
     return None
+
+
+def _compute_subtitle_layout(text, font, line_h, style, w, h):
+    """Compute wrapped lines and drawing positions. Pure geometry — cacheable by text."""
+    _tmp = ImageDraw.Draw(Image.new("RGBA", (2, 2)))
+    outline_w = int(style.get("outlineWidth", 2))
+    effective_text = text.upper() if style.get("allCaps", False) else text
+    margin = max(int(w * 0.10), 24)
+    max_w = w - 2 * margin - 2 * outline_w
+    lines = wrap_text(effective_text, font, max_w, _tmp)
+    total_h = len(lines) * line_h
+    pos = style.get("position", "bottom")
+    if pos == "top":
+        y = int(h * 0.08)
+    elif pos == "center":
+        y = (h - total_h) // 2
+    else:
+        y = h - int(h * 0.12) - total_h
+    result = []
+    for line in lines:
+        tw = _measure_text(_tmp, line, font)
+        x = (w - tw) // 2
+        x = max(margin + outline_w, min(x, w - margin - outline_w - tw))
+        result.append((line, x, y))
+        y += line_h
+    return result
+
+
+def _build_subtitle_overlay(text, font, line_h, style, w, h):
+    """Build RGBA overlay for box-enabled subtitles. Result is cacheable."""
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    outline_w = int(style.get("outlineWidth", 2))
+    effective_text = text.upper() if style.get("allCaps", False) else text
+    margin = max(int(w * 0.10), 24)
+    max_w = w - 2 * margin - 2 * outline_w
+    lines = wrap_text(effective_text, font, max_w, draw)
+    total_h = len(lines) * line_h
+    pos = style.get("position", "bottom")
+    if pos == "top":
+        y = int(h * 0.08)
+    elif pos == "center":
+        y = (h - total_h) // 2
+    else:
+        y = h - int(h * 0.12) - total_h
+    text_rgb = hex_to_rgb(style.get("textColor", "#ffffff"))
+    outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))
+    box_rgb = hex_to_rgb(style.get("boxColor", "#000000"))
+    box_alpha = int(style.get("boxOpacity", 70) / 100 * 255)
+    for line in lines:
+        tw = _measure_text(draw, line, font)
+        x = (w - tw) // 2
+        x = max(margin + outline_w, min(x, w - margin - outline_w - tw))
+        pad_x, pad_y = 12, 5
+        draw.rectangle([max(0, x - pad_x), y - pad_y, min(w, x + tw + pad_x), y + line_h - 4],
+                       fill=(*box_rgb, box_alpha))
+        draw.text((x, y), line, font=font, fill=(*text_rgb, 255),
+                  stroke_width=outline_w,
+                  stroke_fill=(*outline_rgb, 255) if outline_w > 0 else None)
+        y += line_h
+    return overlay
 
 def _measure_text(draw, text, font) -> int:
     """Return rendered pixel width of text."""
@@ -295,65 +358,22 @@ def hex_to_rgb(hex_color):
 
 def draw_subtitle(img, text, font, line_h, style):
     w, h = img.size
-
-    # Transparent overlay so box can have alpha
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-
-    outline_w   = int(style.get("outlineWidth", 2))
-    all_caps    = style.get("allCaps", False)
-
-    # Apply allCaps BEFORE wrapping so measurement reflects actual rendered width.
-    # Uppercase letters are ~15–25% wider; wrapping on lowercase then uppercasing
-    # causes overflow on the right edge.
-    effective_text = text.upper() if all_caps else text
-
-    # margin: 10% each side (min 24px). Subtract stroke bleed (outline_w) from
-    # each side so a line at max_w + stroke still stays within the margin zone.
-    margin = max(int(w * 0.10), 24)
-    max_w  = w - 2 * margin - 2 * outline_w
-
-    lines = wrap_text(effective_text, font, max_w, draw)
-    total_h = len(lines) * line_h
-
-    pos = style.get("position", "bottom")
-    if pos == "top":
-        y = int(h * 0.08)
-    elif pos == "center":
-        y = (h - total_h) // 2
-    else:
-        y = h - int(h * 0.12) - total_h
-
-    text_rgb    = hex_to_rgb(style.get("textColor",    "#ffffff"))
-    outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))
     box_enabled = style.get("boxEnabled", False)
-    box_rgb     = hex_to_rgb(style.get("boxColor", "#000000"))
-    box_alpha   = int(style.get("boxOpacity", 70) / 100 * 255)
-
-    for line in lines:
-        tw = _measure_text(draw, line, font)
-
-        # Center the line, then clamp so neither text nor its stroke crosses margin.
-        # stroke_width bleeds outline_w pixels beyond tw on each side, so offset by that.
-        x = (w - tw) // 2
-        x = max(margin + outline_w, min(x, w - margin - outline_w - tw))
-
-        if box_enabled and box_alpha > 0:
-            pad_x, pad_y = 12, 5
-            bx1 = max(0, x - pad_x)
-            bx2 = min(w, x + tw + pad_x)
-            draw.rectangle([bx1, y - pad_y, bx2, y + line_h - 4], fill=(*box_rgb, box_alpha))
-
-        draw.text(
-            (x, y), line, font=font,
-            fill=(*text_rgb, 255),
-            stroke_width=outline_w,
-            stroke_fill=(*outline_rgb, 255) if outline_w > 0 else None,
-        )
-        y += line_h
-
-    composited = Image.alpha_composite(img.convert("RGBA"), overlay)
-    return composited.convert("RGB")
+    box_alpha = int(style.get("boxOpacity", 70) / 100 * 255)
+    if box_enabled and box_alpha > 0:
+        overlay = _build_subtitle_overlay(text, font, line_h, style, w, h)
+        return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    else:
+        layout = _compute_subtitle_layout(text, font, line_h, style, w, h)
+        draw = ImageDraw.Draw(img)
+        outline_w = int(style.get("outlineWidth", 2))
+        text_rgb = hex_to_rgb(style.get("textColor", "#ffffff"))
+        outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))
+        for line, x, y in layout:
+            draw.text((x, y), line, font=font, fill=text_rgb,
+                      stroke_width=outline_w,
+                      stroke_fill=outline_rgb if outline_w > 0 else None)
+        return img
 
 def draw_title(img, text, font, style):
     """Draw a persistent title at the top of the frame."""
@@ -389,6 +409,25 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
     title_font = find_font(actual_title_size, font_path, text_hint=title) if has_title else None
     title_style = {"titleColor": title_color}
 
+    # Precompute subtitle lookup structures
+    _starts = [e["start"] for e in entries]
+    _box_enabled = bool(style.get("boxEnabled", False))
+    _box_alpha = int(style.get("boxOpacity", 70) / 100 * 255)
+    _use_alpha_path = _box_enabled and _box_alpha > 0
+    _outline_w = int(style.get("outlineWidth", 2))
+    _text_rgb = hex_to_rgb(style.get("textColor", "#ffffff"))
+    _outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))
+    _subtitle_cache: dict = {}
+
+    # Precompute title layout once — title text never changes between frames
+    _title_layout = None
+    _title_text_rgb = hex_to_rgb(title_color)
+    if has_title:
+        _t_line_h = title_font.size + 8 if hasattr(title_font, 'size') else 40
+        _t_style = {"textColor": title_color, "outlineColor": "#000000",
+                    "outlineWidth": 2, "allCaps": False, "boxEnabled": False, "position": "top"}
+        _title_layout = _compute_subtitle_layout(title, title_font, _t_line_h, _t_style, w, h)
+
     decode = subprocess.Popen(
         [FFMPEG, "-i", input_path, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -412,14 +451,28 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
             if len(chunk) < frame_bytes:
                 break
             t    = frame_num / fps
-            text = get_text_at(t, entries)
+            text = get_text_at(t, entries, _starts)
             needs_draw = text or has_title
             if needs_draw:
                 img = Image.frombytes("RGB", (w, h), chunk)
                 if text:
-                    img = draw_subtitle(img, text, font, line_h, style)
-                if has_title:
-                    img = draw_title(img, title, title_font, title_style)
+                    if _use_alpha_path:
+                        if text not in _subtitle_cache:
+                            _subtitle_cache[text] = _build_subtitle_overlay(text, font, line_h, style, w, h)
+                        img = Image.alpha_composite(img.convert("RGBA"), _subtitle_cache[text]).convert("RGB")
+                    else:
+                        if text not in _subtitle_cache:
+                            _subtitle_cache[text] = _compute_subtitle_layout(text, font, line_h, style, w, h)
+                        draw = ImageDraw.Draw(img)
+                        for line, x, y in _subtitle_cache[text]:
+                            draw.text((x, y), line, font=font, fill=_text_rgb,
+                                      stroke_width=_outline_w,
+                                      stroke_fill=_outline_rgb if _outline_w > 0 else None)
+                if _title_layout:
+                    draw = ImageDraw.Draw(img)
+                    for line, x, y in _title_layout:
+                        draw.text((x, y), line, font=title_font, fill=_title_text_rgb,
+                                  stroke_width=2, stroke_fill=(0, 0, 0))
                 encode.stdin.write(img.tobytes())
             else:
                 encode.stdin.write(chunk)
