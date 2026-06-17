@@ -58,6 +58,14 @@ pub struct ClassifyResult {
     pub sections: Vec<Section>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct CaptionResult {
+    pub caption_short:  String,
+    pub caption_long:   String,
+    pub hashtags_short: Vec<String>,
+    pub hashtags_long:  Vec<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LlmModel {
     pub name: String,
@@ -1962,6 +1970,47 @@ pub async fn classify_transcript(
 
     let sections = split_long_sections(result.sections, &segments, max_secs as f64);
     Ok(ClassifyResult { sections })
+}
+
+#[tauri::command]
+pub async fn generate_caption(
+    app: tauri::AppHandle,
+    server: tauri::State<'_, LlamaServerState>,
+    segments: Vec<SrtSegment>,
+    language: String,
+    model_path: String,
+    ollama_model: String,
+) -> Result<CaptionResult, String> {
+    if segments.is_empty() {
+        return Err("Tidak ada segmen untuk generate caption".to_string());
+    }
+    let lang = if language.is_empty() { "id".to_string() } else { language };
+
+    // Build prompt inline — same pattern as build_analyze_prompt
+    let text: String = segments.iter()
+        .map(|s| format!("[{}] {}: {}", s.index, s.start_time, s.text))
+        .collect::<Vec<_>>().join("\n");
+    let lang_name = match lang.as_str() {
+        "id" => "Bahasa Indonesia",
+        "en" => "English",
+        _    => "English",
+    };
+    let prompt = format!(
+        "Kamu adalah copywriter media sosial profesional.\n\
+         Buat caption untuk video berikut berdasarkan transkripnya.\n\n\
+         Bahasa caption: {lang_name}\n\n\
+         Transkrip klip:\n{text}\n\n\
+         Buat dua versi caption:\n\
+         1. TikTok (pendek): hook 1 kalimat kuat, 1-2 kalimat isi, 5-7 hashtag relevan\n\
+         2. Instagram (panjang): hook, 2-3 paragraf isi, call-to-action, 15-20 hashtag\n\n\
+         Balas HANYA dengan JSON valid tanpa teks lain:\n\
+         {{\"caption_short\":\"...\",\"caption_long\":\"...\",\
+         \"hashtags_short\":[\"#tag1\"],\"hashtags_long\":[\"#tag1\",\"#tag2\"]}}"
+    );
+
+    let content = run_llm_prompt(&app, &*server, &prompt, &model_path, &ollama_model, 1024).await?;
+    serde_json::from_str(extract_json_object(&content))
+        .map_err(|e| format!("Gagal parse caption dari AI: {e}\nContent: {content}"))
 }
 
 async fn exec_smart_crop(

@@ -21,6 +21,7 @@ pub fn run() {
             translate_transcript,
             analyze_transcript,
             classify_transcript,
+            generate_caption,
             list_llm_models,
             download_llm_model,
             delete_llm_model,
