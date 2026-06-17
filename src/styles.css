@@ -2142,3 +2142,19 @@ body {
 }
 .caption-footer { display: flex; justify-content: flex-end; }
 ::-webkit-scrollbar-thumb:hover { background: #3e4562; }
+
+.srt-view { padding: 8px 0; }
+.srt-content {
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  padding: 12px;
+  background: var(--surface);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  user-select: text;
+}

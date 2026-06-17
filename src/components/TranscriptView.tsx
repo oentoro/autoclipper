@@ -828,8 +828,16 @@ export default function TranscriptView({
         </div>
 
         <div className="segments-list">
-          {/* Section-grouped view */}
-          {hasSections && !searchText ? (
+          {/* SRT view */}
+          {showSrt ? (
+            <div className="srt-view">
+              <pre className="srt-content">
+                {segments.map(seg =>
+                  `${seg.index}\n${seg.start_time} --> ${seg.end_time}\n${seg.text}\n`
+                ).join("\n")}
+              </pre>
+            </div>
+          ) : hasSections && !searchText ? (
             sections.map((section, sIdx) => {
               const status = sectionStatus(section, segments, selectedIndices);
               const segs = segmentsOf(section);
@@ -895,7 +903,7 @@ export default function TranscriptView({
                     <span className="segment-time">{seg.start_time} → {seg.end_time}</span>
                     <span className="segment-duration">{(seg.end - seg.start).toFixed(1)}s</span>
                   </div>
-                  <p className="segment-text">{seg.text}</p>
+                  {renderSegmentText(seg)}
                 </div>
               ))}
 
