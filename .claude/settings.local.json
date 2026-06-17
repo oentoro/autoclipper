@@ -56,7 +56,8 @@
       "Bash(rtk git *)",
       "Bash(rustc --version)",
       "Bash(npm --version)",
-      "Bash(xcode-select -p)"
+      "Bash(xcode-select -p)",
+      "Bash(git *)"
     ]
   }
 }
