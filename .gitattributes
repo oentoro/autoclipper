@@ -1,0 +1,17 @@
+* text=auto
+
+# Shell scripts always LF
+*.sh    text eol=lf
+
+# PowerShell scripts always CRLF
+*.ps1   text eol=crlf
+
+# Python, Rust, JS/TS always LF
+*.py    text eol=lf
+*.rs    text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
