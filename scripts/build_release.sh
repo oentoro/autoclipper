@@ -24,7 +24,7 @@ EXTRA_CONFIG=$(cat <<'JSONEOF'
       "../scripts/smart_crop.py",
       "../scripts/download_llama_server.py",
       "vendor/python/**/*",
-      "vendor/bin/**",
+      "vendor/bin/*",
       "vendor/models/**/*"
     ]
   }
