@@ -48,6 +48,63 @@ def emit_status(msg: str) -> None:
         pass
 
 
+# ── InsightFace SCRFD (frontal + profil 0°–90°+) ─────────────────────────────
+
+def _load_insightface():
+    """Return InsightFace FaceAnalysis app (detection only), or None if unavailable."""
+    try:
+        from insightface.app import FaceAnalysis
+        app = FaceAnalysis(name="buffalo_sc", allowed_modules=["detection"])
+        app.prepare(ctx_id=-1, det_size=(640, 640))  # -1 = CPU
+        return app
+    except Exception:
+        return None
+
+
+def _detect_insightface(frame, app) -> list[dict]:
+    """
+    Detect faces with InsightFace SCRFD.
+    Keypoint order (buffalo_sc / SCRFD): left_eye, right_eye, nose_tip,
+                                          left_mouth, right_mouth.
+    Returns same dict format: {cx, bbox:(x,y,w,h), mouth:(x,y,w,h), score}.
+    """
+    h, w = frame.shape[:2]
+    faces = app.get(frame)  # InsightFace uses BGR natively
+    if not faces:
+        return []
+
+    result = []
+    for face in faces:
+        x1, y1, x2, y2 = [int(v) for v in face.bbox]
+        bx, by = max(0, x1), max(0, y1)
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        score = float(face.det_score)
+
+        kps = face.kps  # (5, 2): left_eye, right_eye, nose, left_mouth, right_mouth
+        if kps is not None and len(kps) >= 5:
+            nose_x = int(kps[2][0])
+            lm = kps[3]   # left mouth corner
+            rm = kps[4]   # right mouth corner
+            # Expand mouth region — works for both frontal and profile views
+            mx = max(0, int(min(lm[0], rm[0])) - 8)
+            my = max(0, int(min(lm[1], rm[1])) - 8)
+            mw = max(16, int(abs(rm[0] - lm[0])) + 16)
+            mh = max(14, int(abs(rm[1] - lm[1])) + 22)
+        else:
+            nose_x = bx + bw // 2
+            mx, my, mw, mh = bx, by + int(bh * 0.65), bw, max(8, int(bh * 0.30))
+
+        cx = nose_x if (0 < nose_x < w) else bx + bw // 2
+        result.append({
+            "cx":    cx,
+            "bbox":  (bx, by, bw, bh),
+            "mouth": (mx, my, mw, mh),
+            "score": score,
+        })
+    return result
+
+
 # ── MediaPipe face detection ──────────────────────────────────────────────────
 
 def _load_mediapipe():
@@ -347,17 +404,22 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float,
     fh_px = test_frame.shape[0] if ret else 720
     fw_px = test_frame.shape[1] if ret else 1280
 
-    # Detector priority: MediaPipe > YuNet > Haar cascade
-    mp_detector = _load_mediapipe()
-    yunet = None
-    if mp_detector is not None:
-        emit_status("[smart_crop] Detector: MediaPipe (deep learning, presisi tinggi)")
+    # Detector priority: InsightFace > MediaPipe > YuNet > Haar cascade
+    insight_app  = _load_insightface()
+    mp_detector  = None
+    yunet        = None
+    if insight_app is not None:
+        emit_status("[smart_crop] Detector: InsightFace SCRFD (frontal + profil 0°–90°, presisi tertinggi)")
     else:
-        yunet = _load_yunet(fw_px, fh_px)
-        if yunet is not None:
-            emit_status("[smart_crop] Detector: YuNet (frontal + profile)")
+        mp_detector = _load_mediapipe()
+        if mp_detector is not None:
+            emit_status("[smart_crop] Detector: MediaPipe (deep learning, presisi tinggi)")
         else:
-            emit_status("[smart_crop] Detector: Haar cascade (fallback) — install mediapipe untuk presisi lebih baik")
+            yunet = _load_yunet(fw_px, fh_px)
+            if yunet is not None:
+                emit_status("[smart_crop] Detector: YuNet (frontal + profil)")
+            else:
+                emit_status("[smart_crop] Detector: Haar cascade (fallback) — install insightface untuk presisi lebih baik")
 
     cascade_front   = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     cascade_profile = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
@@ -393,7 +455,9 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float,
                 break
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            if mp_detector is not None:
+            if insight_app is not None:
+                faces = _detect_insightface(frame, insight_app)
+            elif mp_detector is not None:
                 faces = _detect_mediapipe(frame, mp_detector)
             elif yunet is not None:
                 faces = _detect_yunet(frame, yunet)

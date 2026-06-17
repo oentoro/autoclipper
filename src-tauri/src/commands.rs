@@ -1740,6 +1740,19 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         optional: true,
     });
 
+    let insightface_ok = pkg_check("insightface", "insightface");
+    checks.push(DepCheck {
+        name: "insightface (Smart Crop — deteksi wajah profil/samping)".to_string(),
+        ok: insightface_ok,
+        path: None,
+        error: if !insightface_ok {
+            Some("insightface belum terinstall — Smart Crop tidak bisa mendeteksi wajah dari samping. Install untuk akurasi terbaik.".to_string())
+        } else { None },
+        install_cmd: if !insightface_ok { Some(pip_install("insightface onnxruntime")) } else { None },
+        download_url: None,
+        optional: true,
+    });
+
     let mediapipe_ok = pkg_check("mediapipe", "mediapipe");
     checks.push(DepCheck {
         name: "mediapipe (Smart Crop presisi tinggi)".to_string(),
