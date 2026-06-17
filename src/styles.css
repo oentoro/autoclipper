@@ -2126,7 +2126,7 @@ body {
 .caption-tab.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--bg);
 }
 .caption-body { display: flex; flex-direction: column; gap: 8px; }
 .caption-text {

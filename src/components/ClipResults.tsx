@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLang } from "../i18n";
 import type { ClipResult, CaptionResult, SrtSegment } from "../types";
 
@@ -13,6 +13,9 @@ interface Props {
   ollamaModel: string;
 }
 
+// Hoisted outside component to avoid re-evaluation on every render
+type CaptionState = "idle" | "loading" | "done" | "error";
+
 export default function ClipResults({
   result,
   loading,
@@ -24,20 +27,33 @@ export default function ClipResults({
 }: Props) {
   const { t } = useLang();
 
-  type CaptionState = "idle" | "loading" | "done" | "error";
   const [captionState, setCaptionState] = useState<CaptionState>("idle");
   const [caption, setCaption] = useState<CaptionResult | null>(null);
   const [captionTab, setCaptionTab] = useState<"tiktok" | "instagram">("tiktok");
   const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!result || loading || selectedSegments.length === 0) return;
     generateCaption();
   }, [result]);
 
+  // Clean up any pending "copied" timer on unmount
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current !== null) {
+        clearTimeout(copiedTimerRef.current);
+      }
+    };
+  }, []);
+
   async function generateCaption() {
     setCaptionState("loading");
     setCopied(false);
+    if (copiedTimerRef.current !== null) {
+      clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = null;
+    }
     try {
       const res = await invoke<CaptionResult>("generate_caption", {
         segments: selectedSegments,
@@ -52,7 +68,7 @@ export default function ClipResults({
     }
   }
 
-  function copyCaption() {
+  async function copyCaption() {
     if (!caption) return;
     const hashtags = captionTab === "tiktok"
       ? caption.hashtags_short
@@ -60,9 +76,17 @@ export default function ClipResults({
     const text = captionTab === "tiktok"
       ? caption.caption_short
       : caption.caption_long;
-    navigator.clipboard.writeText(`${text}\n\n${hashtags.join(" ")}`);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(`${text}\n\n${hashtags.join(" ")}`);
+      setCopied(true);
+      if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => {
+        setCopied(false);
+        copiedTimerRef.current = null;
+      }, 2000);
+    } catch {
+      // clipboard write failed — do not flip copied state
+    }
   }
 
   function openInFinder(path: string) {
