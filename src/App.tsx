@@ -798,6 +798,10 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             result={clipResult}
             loading={step === "clipping"}
             onBack={() => setStep("transcript")}
+            selectedSegments={segments.filter(s => selectedIndices.has(s.index))}
+            detectedLanguage={detectedLanguage}
+            modelPath={selectedLlm?.source === "local" ? selectedLlm.path : ""}
+            ollamaModel={selectedLlm?.source === "ollama" ? selectedLlm.ollama_model : ""}
           />
         )}
       </main>
