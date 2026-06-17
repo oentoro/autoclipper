@@ -1,15 +1,69 @@
 import { invoke } from "@tauri-apps/api/core";
+import { useState, useEffect } from "react";
 import { useLang } from "../i18n";
-import type { ClipResult } from "../types";
+import type { ClipResult, CaptionResult, SrtSegment } from "../types";
 
 interface Props {
   result: ClipResult | null;
   loading: boolean;
   onBack: () => void;
+  selectedSegments: SrtSegment[];
+  detectedLanguage: string;
+  modelPath: string;
+  ollamaModel: string;
 }
 
-export default function ClipResults({ result, loading, onBack }: Props) {
+export default function ClipResults({
+  result,
+  loading,
+  onBack,
+  selectedSegments,
+  detectedLanguage,
+  modelPath,
+  ollamaModel,
+}: Props) {
   const { t } = useLang();
+
+  type CaptionState = "idle" | "loading" | "done" | "error";
+  const [captionState, setCaptionState] = useState<CaptionState>("idle");
+  const [caption, setCaption] = useState<CaptionResult | null>(null);
+  const [captionTab, setCaptionTab] = useState<"tiktok" | "instagram">("tiktok");
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!result || loading || selectedSegments.length === 0) return;
+    generateCaption();
+  }, [result]);
+
+  async function generateCaption() {
+    setCaptionState("loading");
+    setCopied(false);
+    try {
+      const res = await invoke<CaptionResult>("generate_caption", {
+        segments: selectedSegments,
+        language: detectedLanguage,
+        modelPath,
+        ollamaModel,
+      });
+      setCaption(res);
+      setCaptionState("done");
+    } catch {
+      setCaptionState("error");
+    }
+  }
+
+  function copyCaption() {
+    if (!caption) return;
+    const hashtags = captionTab === "tiktok"
+      ? caption.hashtags_short
+      : caption.hashtags_long;
+    const text = captionTab === "tiktok"
+      ? caption.caption_short
+      : caption.caption_long;
+    navigator.clipboard.writeText(`${text}\n\n${hashtags.join(" ")}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
 
   function openInFinder(path: string) {
     invoke("reveal_in_file_manager", { path });
@@ -74,6 +128,71 @@ export default function ClipResults({ result, loading, onBack }: Props) {
           {t("btnOpenFinder")}
         </button>
       </div>
+
+      {selectedSegments.length > 0 && (
+        <div className="caption-panel">
+          <div className="caption-header">
+            <span className="caption-title">{t("captionTitle")}</span>
+            <button
+              className="btn btn-sm btn-secondary"
+              onClick={generateCaption}
+              disabled={captionState === "loading"}
+            >
+              {t("captionBtnRegenerate")}
+            </button>
+          </div>
+
+          {captionState === "loading" && (
+            <div className="caption-loading">
+              <div className="spinner small" />
+              <span>{t("captionGenerating")}</span>
+            </div>
+          )}
+
+          {captionState === "error" && (
+            <div className="caption-error">
+              <span>{t("captionError")}</span>
+              <button className="btn btn-sm btn-secondary" onClick={generateCaption}>
+                {t("captionBtnRetry")}
+              </button>
+            </div>
+          )}
+
+          {captionState === "done" && caption && (
+            <>
+              <div className="caption-tabs">
+                <button
+                  className={`caption-tab ${captionTab === "tiktok" ? "active" : ""}`}
+                  onClick={() => setCaptionTab("tiktok")}
+                >
+                  {t("captionTabTiktok")}
+                </button>
+                <button
+                  className={`caption-tab ${captionTab === "instagram" ? "active" : ""}`}
+                  onClick={() => setCaptionTab("instagram")}
+                >
+                  {t("captionTabInstagram")}
+                </button>
+              </div>
+
+              <div className="caption-body">
+                <p className="caption-text">
+                  {captionTab === "tiktok" ? caption.caption_short : caption.caption_long}
+                </p>
+                <p className="caption-hashtags">
+                  {(captionTab === "tiktok" ? caption.hashtags_short : caption.hashtags_long).join(" ")}
+                </p>
+              </div>
+
+              <div className="caption-footer">
+                <button className="btn btn-primary" onClick={copyCaption}>
+                  {copied ? t("captionBtnCopied") : t("captionBtnCopy")}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="results-actions">
         <button className="btn btn-secondary" onClick={onBack}>
