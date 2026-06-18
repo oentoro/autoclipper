@@ -2355,6 +2355,10 @@ pub async fn download_youtube(
         .to_string_lossy()
         .to_string();
 
+    // Write filepath to a temp file — avoids stdout parsing races entirely
+    let filepath_tmp = std::env::temp_dir().join(format!("ytdlp_path_{}.txt", std::process::id()));
+    let filepath_tmp_str = filepath_tmp.to_string_lossy().to_string();
+
     let mut child = TokioCommand::new(&ytdlp)
         .args([
             "--newline", "--no-colors", "--progress",
@@ -2362,7 +2366,7 @@ pub async fn download_youtube(
             "--merge-output-format", "mp4",
             "-o", &out_template,
             "--no-playlist",
-            "--print", "after_move:filepath",
+            "--print-to-file", "after_move:filepath", &filepath_tmp_str,
             &url,
         ])
         // Force Python to flush output immediately instead of buffering
@@ -2374,14 +2378,11 @@ pub async fn download_youtube(
 
     if let Some(pid) = child.id() { *cancel.pid.lock().unwrap() = Some(pid); }
 
-    // yt-dlp sends ALL output ([download] progress, [Merger], filepath) to stdout.
-    // stderr only carries warnings/errors. Read stdout for both progress events
-    // and the final filepath printed by --print after_move:filepath.
+    // Read stdout only for progress events; filepath now comes from --print-to-file temp file.
     let stdout_task = if let Some(stdout) = child.stdout.take() {
         let app_clone = app.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
-            let mut last = String::new();
             while let Ok(Some(line)) = reader.next_line().await {
                 let t = line.trim().to_string();
                 if t.is_empty() { continue; }
@@ -2409,12 +2410,7 @@ pub async fn download_youtube(
                 if let Some(p) = prog {
                     let _ = app_clone.emit("yt-download-progress", p);
                 }
-                // filepath from --print after_move:filepath: a plain path line (no leading '[')
-                if !t.starts_with('[') && !t.starts_with("Deleting") && !t.starts_with("WARNING") {
-                    last = t;
-                }
             }
-            last
         }))
     } else { None };
 
@@ -2434,9 +2430,42 @@ pub async fn download_youtube(
         return Err("Download dibatalkan atau URL tidak valid. Pastikan URL YouTube benar dan yt-dlp versi terbaru.".to_string());
     }
 
-    let filepath = if let Some(task) = stdout_task {
-        task.await.unwrap_or_default()
-    } else { String::new() };
+    // Drain stdout task (still needed for progress events; we no longer parse filepath from it)
+    if let Some(task) = stdout_task { let _ = task.await; }
+
+    // Read filepath from the temp file written by --print-to-file
+    let mut filepath = std::fs::read_to_string(&filepath_tmp)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let _ = std::fs::remove_file(&filepath_tmp);
+
+    // Fallback: scan Downloads dir for the most recently modified mp4 (< 5 min old)
+    if filepath.is_empty() || !std::path::Path::new(&filepath).exists() {
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(300))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if let Ok(entries) = std::fs::read_dir(&out_dir) {
+            let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("mp4") {
+                    if let Ok(meta) = p.metadata() {
+                        if let Ok(modified) = meta.modified() {
+                            if modified >= cutoff {
+                                if best.as_ref().map_or(true, |(t, _)| modified > *t) {
+                                    best = Some((modified, p));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some((_, p)) = best {
+                filepath = p.to_string_lossy().to_string();
+            }
+        }
+    }
 
     if filepath.is_empty() || !std::path::Path::new(&filepath).exists() {
         return Err("File hasil download tidak ditemukan. Coba perbarui yt-dlp: pip install -U yt-dlp".to_string());
@@ -3229,9 +3258,11 @@ pub async fn download_whisper_model(
         state.pids.lock().unwrap().insert(model_key.clone(), pid);
     }
 
-    // Stream stderr progress
+    // Stream stderr: emit PROGRESS: lines as events, save rest for error reporting
     let mk_clone = model_key.clone();
     let app_clone = app.clone();
+    let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let stderr_buf_clone = stderr_buf.clone();
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
@@ -3244,6 +3275,12 @@ pub async fn download_whisper_model(
                             "done": false,
                             "error": null,
                         }));
+                    }
+                } else {
+                    let mut buf = stderr_buf_clone.lock().unwrap();
+                    if buf.len() < 2000 {
+                        buf.push_str(&line);
+                        buf.push('\n');
                     }
                 }
             }
@@ -3267,9 +3304,15 @@ pub async fn download_whisper_model(
     }
 
     if !output.status.success() {
-        let err_msg = String::from_utf8_lossy(&output.stdout).to_string();
-        let err: serde_json::Value = serde_json::from_str(&err_msg).unwrap_or_default();
-        let msg = err["error"].as_str().unwrap_or("Download gagal").to_string();
+        let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let err: serde_json::Value = serde_json::from_str(&stdout_str).unwrap_or_default();
+        let msg = err["error"].as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                // stdout empty (e.g. SyntaxError crash) — fall back to captured stderr
+                let se = stderr_buf.lock().unwrap().trim().to_string();
+                if se.is_empty() { "Download gagal".to_string() } else { se }
+            });
         let _ = app.emit("whisper-download-progress", serde_json::json!({
             "model_key": model_key,
             "percent": 0,

@@ -542,11 +542,14 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float,
                         # Too soon — stay on current face, ignore the switch
                         lock_age += 1
                 last_cx = locked_cx
-            # else: no face detected — hold last position, do NOT advance lock_age.
-            # If lock_age accumulated during no-face frames the tracker would
-            # satisfy min_lock_samples and snap to a new position the instant a
-            # face reappeared, causing a hard jump. Freezing the counter means
-            # the lock must be earned from face-detected frames only.
+            else:
+                # No face detected — hold last position AND reset lock_age.
+                # Resetting ensures that when a face reappears (possibly at a
+                # different / center position), it must accumulate min_lock_samples
+                # fresh detections before we switch.  Without this reset the
+                # pre-gap lock_age would satisfy min_lock_samples immediately,
+                # causing the crop to snap to center the instant any face returns.
+                lock_age = 0
 
             prev_gray = gray
         else:

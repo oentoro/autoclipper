@@ -57,7 +57,9 @@
       "Bash(rustc --version)",
       "Bash(npm --version)",
       "Bash(xcode-select -p)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "PowerShell(cd C:\\\\Users\\\\oentoro\\\\autoclipper\\\\src-tauri && cargo check 2>&1 | Where-Object { $_ -match \"^error\\\\[\" } | Select-Object -First 20)",
+      "PowerShell(yt-dlp *)"
     ]
   }
 }

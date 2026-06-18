@@ -135,8 +135,7 @@ if __name__ == "__main__":
                 if repo_f16 and repo_f16 != repo:
                     import sys as _sys
                     _sys.stderr.write(f"[download] q4 tidak tersedia ({q4_err}), unduh float16: {repo_f16}\n")
-                    # Adjust size estimate for float16
-                    global SIZE_ESTIMATES
+                    # Adjust size estimate for float16 (already at module scope, no global needed)
                     SIZE_ESTIMATES = {**SIZE_ESTIMATES, **SIZE_ESTIMATES_F16}
                     path = download_repo(repo_f16, cache_dir, model_id)
                 else:
