@@ -180,6 +180,13 @@ export default function TranscriptView({
   const [mcEnd, setMcEnd] = useState("");
   const [mcError, setMcError] = useState("");
   const mcEndRef = useRef<HTMLInputElement>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (editingIndex !== null) {
+      editTextareaRef.current?.focus();
+    }
+  }, [editingIndex]);
 
   function startEdit(seg: SrtSegment, e: React.MouseEvent) {
     e.stopPropagation();
@@ -202,6 +209,7 @@ export default function TranscriptView({
     if (editingIndex === seg.index) {
       return (
         <textarea
+          ref={editTextareaRef}
           className="segment-text-edit"
           value={editingText}
           onChange={e => setEditingText(e.target.value)}
@@ -212,7 +220,6 @@ export default function TranscriptView({
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEdit(); }
           }}
           onClick={e => e.stopPropagation()}
-          autoFocus
           rows={2}
         />
       );

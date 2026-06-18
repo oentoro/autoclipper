@@ -1071,6 +1071,16 @@ fn build_retimed_entries(
     entries
 }
 
+// ponytail: ultrafast sw encode — 2-3x faster than "fast", no HW compat issues.
+// h264_videotoolbox tried but rejected -q:v mode with EINVAL on this FFmpeg build.
+fn video_encoder_args() -> Vec<String> {
+    vec![
+        "-c:v".into(), "libx264".into(),
+        "-preset".into(), "ultrafast".into(),
+        "-crf".into(), "23".into(),
+    ]
+}
+
 // Single group — always transcode so that the seek is frame-accurate.
 // Stream copy with fast input seek snaps to the nearest keyframe which can
 // include a few frames of content before the intended start, causing repeats
@@ -1100,9 +1110,9 @@ async fn encode_one_group(
     args.extend([
         "-map".to_string(), "0:v:0".to_string(),
         "-map".to_string(), "0:a:0?".to_string(),
-        "-c:v".to_string(), "libx264".to_string(),
-        "-preset".to_string(), "fast".to_string(),
-        "-crf".to_string(), "23".to_string(),
+    ]);
+    args.extend(video_encoder_args());
+    args.extend([
         "-threads".to_string(), "0".to_string(),
         "-c:a".to_string(), "aac".to_string(),
         "-b:a".to_string(), "128k".to_string(),
@@ -1216,9 +1226,9 @@ async fn concat_groups(
         "-filter_complex".to_string(), filter,
         "-map".to_string(), "[v]".to_string(),
         "-map".to_string(), "[a]".to_string(),
-        "-c:v".to_string(), "libx264".to_string(),
-        "-preset".to_string(), "fast".to_string(),
-        "-crf".to_string(), "23".to_string(),
+    ]);
+    args.extend(video_encoder_args());
+    args.extend([
         "-threads".to_string(), "0".to_string(),
         "-c:a".to_string(), "aac".to_string(),
         "-b:a".to_string(), "128k".to_string(),
