@@ -2025,7 +2025,7 @@ pub async fn generate_caption(
          \"hashtags_short\":[\"#tag1\"],\"hashtags_long\":[\"#tag1\",\"#tag2\"]}}"
     );
 
-    let content = run_llm_prompt(&app, &*server, &prompt, &model_path, &ollama_model, 1024).await?;
+    let content = run_llm_prompt(&app, &*server, &prompt, &model_path, &ollama_model, 2048).await?;
     serde_json::from_str(extract_json_object(&content))
         .map_err(|e| format!("Gagal parse caption dari AI: {e}\nContent: {content}"))
 }
