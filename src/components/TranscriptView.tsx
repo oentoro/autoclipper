@@ -43,6 +43,8 @@ interface Props {
   onSmartCropChange: (v: boolean) => void;
   smartCropTransition: "smooth" | "aggressive";
   onSmartCropTransitionChange: (v: "smooth" | "aggressive") => void;
+  censorFaces: boolean;
+  onCensorFacesChange: (v: boolean) => void;
   subtitleFontSize: number;
   subtitleFont: string;
   systemFonts: FontInfo[];
@@ -138,6 +140,8 @@ export default function TranscriptView({
   onSmartCropChange,
   smartCropTransition,
   onSmartCropTransitionChange,
+  censorFaces,
+  onCensorFacesChange,
   subtitleFontSize,
   subtitleFont,
   systemFonts,
@@ -617,6 +621,22 @@ export default function TranscriptView({
             )}
           </div>
         )}
+
+        {/* Sensor Wajah — independen dari smart crop dan aspect ratio */}
+        <div className="sidebar-block smart-crop-block">
+          <label className="smart-crop-toggle">
+            <input
+              type="checkbox"
+              checked={censorFaces}
+              onChange={e => onCensorFacesChange(e.target.checked)}
+            />
+            <span className="smart-crop-label">
+              <span className="smart-crop-icon">🙈</span>
+              {t("censorFacesLabel")}
+              <span className="smart-crop-hint">{t("censorFacesHint")}</span>
+            </span>
+          </label>
+        </div>
 
         {/* Subtitle */}
         <div className="sidebar-block">

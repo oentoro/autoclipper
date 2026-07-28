@@ -136,6 +136,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [aspectRatio, setAspectRatio] = useState<string>("original");
   const [smartCrop, setSmartCrop] = useState<boolean>(false);
   const [smartCropTransition, setSmartCropTransition] = useState<"smooth" | "aggressive">("smooth");
+  const [censorFaces, setCensorFaces] = useState<boolean>(false);
   const [subtitleFontSize, setSubtitleFontSize] = useState<number>(0);
   const [subtitleFont, setSubtitleFont] = useState<string>("");
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
@@ -450,6 +451,15 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       }
     });
 
+    const unlistenCensor = await listen<number>("clip-censor-percent", event => {
+      const pct = event.payload;
+      if (pct >= 100) {
+        setLoadingMsg(t("clippingFinalizing"));
+      } else {
+        setLoadingMsg(t("clippingCensor", { pct }));
+      }
+    });
+
     try {
       const result = await invoke<ClipResult>("clip_video", {
         videoPath,
@@ -462,6 +472,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         aspectRatio,
         smartCrop,
         smartCropTransition,
+        censorFaces,
         fontSize: subtitleFontSize,
         fontPath: subtitleFont,
         subtitleStyleJson: JSON.stringify(subtitleStyle),
@@ -479,6 +490,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
       unlistenConcat();
       unlistenSmart();
       unlistenBurn();
+      unlistenCensor();
       setLoading(false);
       setLoadingMsg("");
       setCancelling(false);
@@ -761,6 +773,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             onSmartCropChange={setSmartCrop}
             smartCropTransition={smartCropTransition}
             onSmartCropTransitionChange={setSmartCropTransition}
+            censorFaces={censorFaces}
+            onCensorFacesChange={setCensorFaces}
             subtitleFontSize={subtitleFontSize}
             subtitleFont={subtitleFont}
             systemFonts={systemFonts}
