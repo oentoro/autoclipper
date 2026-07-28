@@ -2189,6 +2189,67 @@ async fn exec_burn_subs(
     }
 }
 
+async fn exec_censor_faces(
+    app: &tauri::AppHandle,
+    python: &str,
+    ffmpeg: &str,
+    input: &str,
+    output: &str,
+    pid_cell: &Mutex<Option<u32>>,
+) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    let script = find_script(app, "face_censor.py");
+    let mut cmd = TokioCommand::new(python);
+    cmd.args([&script, input, output])
+        .env("AUTOCLIPPER_FFMPEG", ffmpeg)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let mut child = cmd.spawn()
+        .map_err(|e| format!("Gagal menjalankan face_censor.py: {e}"))?;
+    if let Some(pid) = child.id() { *pid_cell.lock().unwrap() = Some(pid); }
+
+    let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(stderr) = child.stderr.take() {
+        let app_clone = app.clone();
+        let buf = stderr_buf.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                if let Some(pct_str) = line.strip_prefix("PROGRESS:") {
+                    if let Ok(pct) = pct_str.trim().parse::<u8>() {
+                        let _ = app_clone.emit("clip-censor-percent", pct);
+                    }
+                } else {
+                    let mut g = buf.lock().unwrap();
+                    g.push_str(&line);
+                    g.push('\n');
+                }
+            }
+        });
+    }
+
+    let output_r = child.wait_with_output().await
+        .map_err(|e| format!("Gagal menunggu face_censor.py: {e}"))?;
+    *pid_cell.lock().unwrap() = None;
+
+    if output_r.status.success() {
+        Ok(())
+    } else {
+        let stdout = String::from_utf8_lossy(&output_r.stdout);
+        let stderr_captured = stderr_buf.lock().unwrap().clone();
+        let src = if !stdout.trim().is_empty() { stdout.to_string() } else { stderr_captured };
+        let err: serde_json::Value = serde_json::from_str(&src).unwrap_or_default();
+        let msg = err["error"].as_str().map(|s| s.to_string())
+            .unwrap_or_else(|| src.trim().to_string());
+        Err(format!("Sensor wajah gagal: {msg}"))
+    }
+}
+
 #[tauri::command]
 pub async fn clip_video(
     app: tauri::AppHandle,
@@ -2204,6 +2265,7 @@ pub async fn clip_video(
     aspect_ratio: String,
     smart_crop: bool,
     smart_crop_transition: String,
+    censor_faces: bool,
     font_size: u32,
     font_path: String,
     subtitle_style_json: String,
@@ -2270,45 +2332,48 @@ pub async fn clip_video(
     let eff_title_color = if has_title { vertical_title_color.as_str() } else { "" };
 
     let needs_burn = burn_subtitles || has_title;
+    let needs_censor = censor_faces;
 
-    match (needs_burn, needs_smart) {
-        // ── Case 1: no burn, no smart crop ────────────────────────────────
-        (false, false) => {
-            concat_groups(&app, &ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), &output_path, pid_cell).await?;
-        }
+    enum Stage { SmartCrop, CensorFaces, BurnSubs }
+    let mut stage_list: Vec<Stage> = Vec::new();
+    if needs_smart  { stage_list.push(Stage::SmartCrop); }
+    if needs_censor { stage_list.push(Stage::CensorFaces); }
+    if needs_burn   { stage_list.push(Stage::BurnSubs); }
 
-        // ── Case 2: burn (subtitle and/or title), no smart crop ───────────
-        (true, false) => {
-            let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
-            concat_groups(&app, &ffmpeg, &video_path, &groups, ffmpeg_crop.as_deref(), tmp.to_str().unwrap(), pid_cell).await?;
-            let entries = if burn_subtitles { build_retimed_entries(&groups, eff_subtitle_mode, &original_by_index) } else { vec![] };
-            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, eff_title, eff_title_fs, eff_title_color, pid_cell).await;
-            let _ = std::fs::remove_file(&tmp);
-            r?;
-        }
+    // concat_groups selalu jalan lebih dulu. Kalau smart crop TIDAK aktif,
+    // crop filter (kalau ada) bisa langsung diselipkan di sini (satu pass);
+    // kalau smart crop aktif, crop dilakukan belakangan oleh smart_crop.py
+    // jadi concat di sini tidak boleh nge-crop (None).
+    let concat_crop = if needs_smart { None } else { ffmpeg_crop.as_deref() };
+    let concat_dest: String = if stage_list.is_empty() {
+        output_path.clone()
+    } else {
+        std::env::temp_dir().join("autoclipper_concat_tmp.mp4").to_string_lossy().to_string()
+    };
+    concat_groups(&app, &ffmpeg, &video_path, &groups, concat_crop, &concat_dest, pid_cell).await?;
 
-        // ── Case 3: smart crop only, no burn ──────────────────────────────
-        (false, true) => {
-            let tmp = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
-            concat_groups(&app, &ffmpeg, &video_path, &groups, None, tmp.to_str().unwrap(), pid_cell).await?;
-            let r = exec_smart_crop(&app, &python, &ffmpeg, tmp.to_str().unwrap(), &output_path, &aspect_ratio, &smart_crop_transition, pid_cell).await;
-            let _ = std::fs::remove_file(&tmp);
-            r?;
-        }
+    let mut current_path = concat_dest;
+    let last_idx = stage_list.len().saturating_sub(1);
 
-        // ── Case 4: smart crop + burn ─────────────────────────────────────
-        (true, true) => {
-            let tmp_concat = std::env::temp_dir().join("autoclipper_concat_tmp.mp4");
-            let tmp_smart  = std::env::temp_dir().join("autoclipper_smart_tmp.mp4");
-            concat_groups(&app, &ffmpeg, &video_path, &groups, None, tmp_concat.to_str().unwrap(), pid_cell).await?;
-            let r = exec_smart_crop(&app, &python, &ffmpeg, tmp_concat.to_str().unwrap(), tmp_smart.to_str().unwrap(), &aspect_ratio, &smart_crop_transition, pid_cell).await;
-            let _ = std::fs::remove_file(&tmp_concat);
-            r?;
-            let entries = if burn_subtitles { build_retimed_entries(&groups, eff_subtitle_mode, &original_by_index) } else { vec![] };
-            let r = exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, tmp_smart.to_str().unwrap(), &output_path, entries, font_size, &font_path, &subtitle_style_json, eff_title, eff_title_fs, eff_title_color, pid_cell).await;
-            let _ = std::fs::remove_file(&tmp_smart);
-            r?;
-        }
+    for (i, stage) in stage_list.iter().enumerate() {
+        let dest: String = if i == last_idx {
+            output_path.clone()
+        } else {
+            std::env::temp_dir().join(format!("autoclipper_stage{i}_tmp.mp4")).to_string_lossy().to_string()
+        };
+
+        let r: Result<(), String> = match stage {
+            Stage::SmartCrop => exec_smart_crop(&app, &python, &ffmpeg, &current_path, &dest, &aspect_ratio, &smart_crop_transition, pid_cell).await,
+            Stage::CensorFaces => exec_censor_faces(&app, &python, &ffmpeg, &current_path, &dest, pid_cell).await,
+            Stage::BurnSubs => {
+                let entries = if burn_subtitles { build_retimed_entries(&groups, eff_subtitle_mode, &original_by_index) } else { vec![] };
+                exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, &current_path, &dest, entries, font_size, &font_path, &subtitle_style_json, eff_title, eff_title_fs, eff_title_color, pid_cell).await
+            }
+        };
+
+        let _ = std::fs::remove_file(&current_path);
+        r?;
+        current_path = dest;
     }
     *pid_cell.lock().unwrap() = None;
 
@@ -2316,6 +2381,7 @@ pub async fn clip_video(
         if needs_smart { format!(" [{aspect_ratio} smart]") } else { format!(" [{aspect_ratio}]") }
     } else { String::new() };
     let sub_note = if burn_subtitles { " + subtitle" } else { "" };
+    let censor_note = if needs_censor { " + sensor wajah" } else { "" };
     let group_note = if groups.len() < total_segments {
         format!(" ({} grup)", groups.len())
     } else { String::new() };
@@ -2323,7 +2389,7 @@ pub async fn clip_video(
         output_path,
         success: true,
         message: format!(
-            "Berhasil menggabungkan {total_segments} segmen{group_note} ({:.1}s){sub_note}{ar_note}",
+            "Berhasil menggabungkan {total_segments} segmen{group_note} ({:.1}s){sub_note}{censor_note}{ar_note}",
             total_duration
         ),
         total_segments,
