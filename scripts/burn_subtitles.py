@@ -4,7 +4,7 @@ burn_subtitles.py <input_video> <entries_json_path> <output_video>
                   [--font-size N] [--font /path/to/font.ttf]
                   [--style '{"textColor":"#fff","outlineColor":"#000",...}']
 """
-import sys, json, subprocess, os, argparse, bisect, tempfile, shutil
+import sys, json, subprocess, os, argparse, bisect, tempfile, shutil, threading
 from PIL import Image, ImageDraw, ImageFont
 import platform as _platform
 
@@ -589,8 +589,20 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
 def _run_ffmpeg_with_progress(cmd, total_duration_sec):
     """Run ffmpeg with -progress pipe:1, translating out_time= lines into
     our own PROGRESS:N convention on stderr (same format the per-frame
-    burn() path already emits, so the Rust caller needs no changes)."""
+    burn() path already emits, so the Rust caller needs no changes).
+    stderr is drained on a background thread concurrently with stdout to
+    avoid a pipe deadlock if ffmpeg ever writes enough to stderr to fill
+    the OS pipe buffer before -progress completes."""
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    stderr_chunks = []
+    def _drain_stderr():
+        if proc.stderr is not None:
+            for line in proc.stderr:
+                stderr_chunks.append(line)
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
     last_pct = 0
     if proc.stdout is not None:
         for line in proc.stdout:
@@ -606,9 +618,10 @@ def _run_ffmpeg_with_progress(cmd, total_duration_sec):
                         last_pct = pct
                 except ValueError:
                     pass
+
     proc.wait()
-    stderr_output = proc.stderr.read() if proc.stderr else ""
-    return proc.returncode, stderr_output
+    stderr_thread.join(timeout=5)
+    return proc.returncode, "".join(stderr_chunks)
 
 
 def burn_native(input_path, entries, output_path, font_size=0, font_path=None, style=None,
