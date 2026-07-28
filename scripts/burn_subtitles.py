@@ -4,7 +4,7 @@ burn_subtitles.py <input_video> <entries_json_path> <output_video>
                   [--font-size N] [--font /path/to/font.ttf]
                   [--style '{"textColor":"#fff","outlineColor":"#000",...}']
 """
-import sys, json, subprocess, os, argparse, bisect
+import sys, json, subprocess, os, argparse, bisect, tempfile, shutil, threading
 from PIL import Image, ImageDraw, ImageFont
 import platform as _platform
 
@@ -26,6 +26,47 @@ def _find_bin(name):
 
 FFMPEG  = os.environ.get("AUTOCLIPPER_FFMPEG")  or _find_bin("ffmpeg")
 FFPROBE = os.environ.get("AUTOCLIPPER_FFPROBE") or _find_bin("ffprobe")
+
+
+def _bitrate_for(w: int, h: int) -> str:
+    """Target bitrate heuristic by pixel count (resolution-independent of
+    orientation) — starting point tuned to roughly match libx264 crf 23
+    output size; revisit if visual QA finds it too aggressive either way."""
+    pixels = w * h
+    if pixels <= 1280 * 720:
+        return "5M"
+    elif pixels <= 1920 * 1080:
+        return "8M"
+    else:
+        return "16M"
+
+
+def _pick_encoder() -> tuple:
+    """
+    Return (encoder_name, is_hardware). Checks ffmpeg's compiled encoder
+    list once — this confirms the encoder was BUILT into this ffmpeg, not
+    that compatible hardware is actually present. Runtime failure (hardware
+    missing) is handled by the caller via a libx264 retry.
+    """
+    system = _platform.system()
+    if system == "Darwin":
+        candidates = ["h264_videotoolbox"]
+    elif system == "Windows":
+        candidates = ["h264_nvenc", "h264_qsv", "h264_amf"]
+    else:
+        candidates = ["h264_nvenc", "h264_vaapi"]
+
+    try:
+        result = subprocess.run([FFMPEG, "-hide_banner", "-encoders"],
+                                 capture_output=True, text=True, timeout=10)
+        available = result.stdout
+    except Exception:
+        available = ""
+
+    for name in candidates:
+        if name in available:
+            return name, True
+    return "libx264", False
 
 _system = _platform.system()
 if _system == "Darwin":
@@ -206,6 +247,12 @@ def emit_progress(pct: int) -> None:
     except OSError:
         pass
 
+def emit_status(msg: str) -> None:
+    try:
+        os.write(2, (msg + "\n").encode("utf-8", errors="replace"))
+    except OSError:
+        pass
+
 def get_video_info(path):
     result = subprocess.run(
         [FFPROBE, "-v", "quiet", "-print_format", "json",
@@ -375,6 +422,32 @@ def draw_subtitle(img, text, font, line_h, style):
                       stroke_fill=outline_rgb if outline_w > 0 else None)
         return img
 
+def render_overlay_image(text, font, line_h, style, w, h):
+    """
+    Render subtitle text onto a transparent RGBA canvas (w x h), reusing the
+    exact same layout/box/stroke logic as draw_subtitle — but always
+    targeting a transparent canvas instead of compositing onto a video
+    frame. Used to pre-render PNG overlays for the native ffmpeg path
+    (burn_native), so CJK/word-wrap/box-style behavior never diverges from
+    the per-frame path.
+    """
+    box_enabled = style.get("boxEnabled", False)
+    box_alpha = int(style.get("boxOpacity", 70) / 100 * 255)
+    if box_enabled and box_alpha > 0:
+        return _build_subtitle_overlay(text, font, line_h, style, w, h)
+
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    outline_w = int(style.get("outlineWidth", 2))
+    text_rgb = hex_to_rgb(style.get("textColor", "#ffffff"))
+    outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))
+    layout = _compute_subtitle_layout(text, font, line_h, style, w, h)
+    for line, x, y, _ in layout:
+        draw.text((x, y), line, font=font, fill=(*text_rgb, 255),
+                   stroke_width=outline_w,
+                   stroke_fill=(*outline_rgb, 255) if outline_w > 0 else None)
+    return overlay
+
 def draw_title(img, text, font, style):
     """Draw a persistent title at the top of the frame."""
     w, h = img.size
@@ -512,6 +585,169 @@ def burn(input_path, entries, output_path, font_size=0, font_path=None, style=No
     emit_progress(100)
     return frame_num
 
+
+def _run_ffmpeg_with_progress(cmd, total_duration_sec):
+    """Run ffmpeg with -progress pipe:1, translating out_time= lines into
+    our own PROGRESS:N convention on stderr (same format the per-frame
+    burn() path already emits, so the Rust caller needs no changes).
+    stderr is drained on a background thread concurrently with stdout to
+    avoid a pipe deadlock if ffmpeg ever writes enough to stderr to fill
+    the OS pipe buffer before -progress completes."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    stderr_chunks = []
+    def _drain_stderr():
+        if proc.stderr is not None:
+            for line in proc.stderr:
+                stderr_chunks.append(line)
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
+    last_pct = 0
+    if proc.stdout is not None:
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("out_time=") and total_duration_sec > 0:
+                time_str = line.split("=", 1)[1]
+                try:
+                    h_s, m_s, s_s = time_str.split(":")
+                    seconds = int(h_s) * 3600 + int(m_s) * 60 + float(s_s)
+                    pct = min(99, int(seconds / total_duration_sec * 100))
+                    if pct > last_pct:
+                        emit_progress(pct)
+                        last_pct = pct
+                except ValueError:
+                    pass
+
+    proc.wait()
+    stderr_thread.join(timeout=5)
+    return proc.returncode, "".join(stderr_chunks)
+
+
+def burn_native(input_path, entries, output_path, font_size=0, font_path=None, style=None,
+                 title="", title_font_size=0, title_color="#ffffff"):
+    if style is None:
+        style = {}
+
+    w, h, fps, total_frames = get_video_info(input_path)
+    duration_sec = total_frames / fps if fps > 0 else 0
+    actual_size = font_size if font_size > 0 else max(26, h // 22)
+
+    all_text = " ".join(e.get("text", "") for e in entries) + " " + title
+    font = find_font(actual_size, font_path, text_hint=all_text)
+    line_h = actual_size + 8
+
+    has_title = bool(title and title.strip())
+    actual_title_size = title_font_size if title_font_size > 0 else max(32, h // 18)
+    title_font = find_font(actual_title_size, font_path, text_hint=title) if has_title else None
+    title_line_h = title_font.size + 8 if has_title and hasattr(title_font, 'size') else 40
+    title_style = {"textColor": title_color, "outlineColor": "#000000", "outlineWidth": 2,
+                   "allCaps": False, "boxEnabled": False, "position": "top"}
+
+    tmp_dir = tempfile.mkdtemp(prefix="autoclipper_burn_")
+    try:
+        emit_status(f"[burn] native path: {len(entries)} entri, render PNG overlay...")
+        emit_progress(0)
+
+        # Render one PNG per unique subtitle text.
+        text_to_png = {}
+        for e in entries:
+            text = e["text"]
+            if text in text_to_png:
+                continue
+            img = render_overlay_image(text, font, line_h, style, w, h)
+            png_path = os.path.join(tmp_dir, f"sub_{len(text_to_png)}.png")
+            img.save(png_path)
+            text_to_png[text] = png_path
+
+        title_png = None
+        if has_title:
+            title_img = render_overlay_image(title, title_font, title_line_h, title_style, w, h)
+            title_png = os.path.join(tmp_dir, "title.png")
+            title_img.save(title_png)
+
+        emit_progress(5)
+
+        # Build ffmpeg input list + filter_complex graph.
+        ffmpeg_inputs = ["-i", input_path]
+        filter_lines = []
+        prev_label = "[0:v]"
+        input_idx = 1
+        overlay_count = sum(1 for _ in entries) + (1 if has_title else 0)
+        step = 0
+        for e in entries:
+            png_path = text_to_png[e["text"]]
+            ffmpeg_inputs += ["-i", png_path]
+            step += 1
+            is_last = (step == overlay_count)
+            out_label = "[vout]" if (is_last and not has_title) else f"[v{step}]"
+            filter_lines.append(
+                f"{prev_label}[{input_idx}:v]overlay=0:0:"
+                f"enable='between(t,{e['start']:.3f},{e['end']:.3f})'{out_label}"
+            )
+            prev_label = out_label
+            input_idx += 1
+
+        if has_title:
+            ffmpeg_inputs += ["-i", title_png]
+            filter_lines.append(
+                f"{prev_label}[{input_idx}:v]overlay=0:0:"
+                f"enable='between(t,0,{duration_sec:.3f})'[vout]"
+            )
+            input_idx += 1
+
+        if not filter_lines:
+            # No subtitles and no title — nothing to overlay, pass source through untouched.
+            filter_lines.append(f"{prev_label}null[vout]")
+
+        filter_script_path = os.path.join(tmp_dir, "filter.txt")
+        with open(filter_script_path, "w") as f:
+            f.write(";\n".join(filter_lines))
+
+        encoder, is_hw = _pick_encoder()
+        bitrate = _bitrate_for(w, h)
+        emit_status(f"[burn] encoder: {encoder} ({'hardware' if is_hw else 'software'})")
+
+        def _build_cmd(enc):
+            cmd = [FFMPEG, "-y", "-loglevel", "error"] + ffmpeg_inputs + [
+                "-filter_complex_script", filter_script_path,
+                "-map", "[vout]", "-map", "0:a?",
+                "-c:v", enc,
+            ]
+            cmd += ["-b:v", bitrate] if enc != "libx264" else ["-preset", "fast", "-crf", "23"]
+            cmd += ["-c:a", "copy", "-progress", "pipe:1", output_path]
+            return cmd
+
+        returncode, stderr_output = _run_ffmpeg_with_progress(_build_cmd(encoder), duration_sec)
+
+        if returncode != 0 and is_hw:
+            emit_status(f"[burn] encoder {encoder} gagal, retry pakai libx264")
+            returncode, stderr_output = _run_ffmpeg_with_progress(_build_cmd("libx264"), duration_sec)
+
+        if returncode != 0:
+            raise RuntimeError(f"ffmpeg gagal (exit {returncode}): {stderr_output[-2000:]}")
+
+        emit_progress(100)
+        return total_frames
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def burn_with_fallback(input_path, entries, output_path, font_size=0, font_path=None,
+                        style=None, title="", title_font_size=0, title_color="#ffffff"):
+    """Try the fast native ffmpeg-overlay path; fall back to the per-frame
+    PIL path unchanged if native fails for any reason."""
+    try:
+        return burn_native(input_path, entries, output_path, font_size=font_size,
+                            font_path=font_path, style=style, title=title,
+                            title_font_size=title_font_size, title_color=title_color)
+    except Exception as e:
+        emit_status(f"[burn] native path gagal ({e}), fallback ke metode lama")
+        return burn(input_path, entries, output_path, font_size=font_size,
+                    font_path=font_path, style=style, title=title,
+                    title_font_size=title_font_size, title_color=title_color)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("input")
@@ -538,7 +774,7 @@ if __name__ == "__main__":
         style = {}
 
     try:
-        frames = burn(
+        frames = burn_with_fallback(
             args.input, entries, args.output,
             font_size=args.font_size,
             font_path=args.font if args.font else None,
