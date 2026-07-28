@@ -414,10 +414,12 @@ def _sharpness(gray, bbox: tuple) -> float:
     return float(cv2.Laplacian(roi, cv2.CV_64F).var())
 
 
-def pick_speaker_cx(faces: list[dict], gray_curr, gray_prev) -> int | None:
+def pick_speaker_cx(faces: list[dict], gray_curr, gray_prev,
+                     locked_cx: int | None = None) -> int | None:
     """
     Choose the speaker face from a list of detections and return its center x.
-    Priority: clear mouth-motion winner → sharpest face.
+    Priority: clear mouth-motion winner → face closest to the current lock
+    (continuity) → sharpest face (only when there's no lock yet).
     """
     if not faces:
         return None
@@ -435,7 +437,15 @@ def pick_speaker_cx(faces: list[dict], gray_curr, gray_prev) -> int | None:
         if best_score > 1.0 and best_score > rest_avg * 2.0:
             return best["cx"]
 
-    # Fallback: sharpest face (usually the in-focus subject)
+    # Ambiguous motion signal (two speakers close together and both quiet
+    # or both moving) — stay on whoever is currently locked instead of
+    # guessing. The old sharpest-face tiebreak has nothing to do with who's
+    # talking and flips noisily frame-to-frame between similarly-sharp
+    # faces, which oscillated the crop between the two speakers and made
+    # the EMA smoothing converge toward the frame's center.
+    if locked_cx is not None:
+        return min(faces, key=lambda f: abs(f["cx"] - locked_cx))["cx"]
+
     best = max(faces, key=lambda f: _sharpness(gray_curr, f["bbox"]))
     return best["cx"]
 
@@ -522,7 +532,7 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float,
             else:
                 faces = _detect_cascade(gray, cascade_front, cascade_profile)
 
-            cx = pick_speaker_cx(faces, gray, prev_gray)
+            cx = pick_speaker_cx(faces, gray, prev_gray, locked_cx)
             if cx is not None:
                 if locked_cx is None:
                     # First detection — establish lock immediately
