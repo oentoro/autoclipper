@@ -27,6 +27,47 @@ def _find_bin(name):
 FFMPEG  = os.environ.get("AUTOCLIPPER_FFMPEG")  or _find_bin("ffmpeg")
 FFPROBE = os.environ.get("AUTOCLIPPER_FFPROBE") or _find_bin("ffprobe")
 
+
+def _bitrate_for(w: int, h: int) -> str:
+    """Target bitrate heuristic by pixel count (resolution-independent of
+    orientation) — starting point tuned to roughly match libx264 crf 23
+    output size; revisit if visual QA finds it too aggressive either way."""
+    pixels = w * h
+    if pixels <= 1280 * 720:
+        return "5M"
+    elif pixels <= 1920 * 1080:
+        return "8M"
+    else:
+        return "16M"
+
+
+def _pick_encoder() -> tuple:
+    """
+    Return (encoder_name, is_hardware). Checks ffmpeg's compiled encoder
+    list once — this confirms the encoder was BUILT into this ffmpeg, not
+    that compatible hardware is actually present. Runtime failure (hardware
+    missing) is handled by the caller via a libx264 retry.
+    """
+    system = _platform.system()
+    if system == "Darwin":
+        candidates = ["h264_videotoolbox"]
+    elif system == "Windows":
+        candidates = ["h264_nvenc", "h264_qsv", "h264_amf"]
+    else:
+        candidates = ["h264_nvenc", "h264_vaapi"]
+
+    try:
+        result = subprocess.run([FFMPEG, "-hide_banner", "-encoders"],
+                                 capture_output=True, text=True, timeout=10)
+        available = result.stdout
+    except Exception:
+        available = ""
+
+    for name in candidates:
+        if name in available:
+            return name, True
+    return "libx264", False
+
 _system = _platform.system()
 if _system == "Darwin":
     FONT_CANDIDATES = [

@@ -101,9 +101,29 @@ def test_overlay_is_transparent_outside_text():
     assert overlay.getpixel((5, 5))[3] == 0
 
 
+def test_bitrate_for_resolution():
+    from burn_subtitles import _bitrate_for
+    assert _bitrate_for(1280, 720) == "5M"
+    assert _bitrate_for(1920, 1080) == "8M"
+    assert _bitrate_for(1080, 1920) == "8M"   # vertical, same pixel count as 1080p
+    assert _bitrate_for(3840, 2160) == "16M"
+
+
+def test_pick_encoder_returns_valid_tuple():
+    from burn_subtitles import _pick_encoder
+    name, is_hw = _pick_encoder()
+    assert isinstance(name, str) and len(name) > 0
+    assert isinstance(is_hw, bool)
+    # Must always have a usable fallback even with no hardware encoder present
+    if not is_hw:
+        assert name == "libx264"
+
+
 if __name__ == "__main__":
     test_overlay_matches_draw_subtitle_no_box()
     test_overlay_matches_draw_subtitle_with_box()
     test_overlay_matches_draw_subtitle_on_white_background()
     test_overlay_is_transparent_outside_text()
+    test_bitrate_for_resolution()
+    test_pick_encoder_returns_valid_tuple()
     print("OK: burn_subtitles native-overlay self-check passed")
