@@ -173,6 +173,52 @@ def test_main_falls_back_to_legacy_burn_on_native_failure():
     assert frames == 42
 
 
+def test_burn_native_retry_then_fallback_on_persistent_ffmpeg_failure():
+    """Exercise the REAL internal failure cascade inside burn_native (not a
+    monkeypatched burn_native): stub only _run_ffmpeg_with_progress so both
+    the primary encoder attempt AND the libx264 retry fail with a non-zero
+    returncode. burn_native must then raise RuntimeError from its own retry
+    logic, which burn_with_fallback must catch and fall through to the real,
+    unstubbed legacy burn() — producing real output via its per-frame
+    PIL/ffmpeg pipeline."""
+    import subprocess as sp
+    import tempfile as tf
+    import burn_subtitles as bs
+
+    workdir = tf.mkdtemp(prefix="autoclipper_test_")
+    src = os.path.join(workdir, "src.mp4")
+    out = os.path.join(workdir, "out.mp4")
+    sp.run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=10",
+        "-pix_fmt", "yuv420p", src,
+    ], check=True)
+
+    entries = [
+        {"start": 0.0, "end": 1.2, "text": "Halo"},
+        {"start": 1.5, "end": 2.5, "text": "Dunia"},
+    ]
+
+    call_count = {"n": 0}
+
+    def always_fails(cmd, total_duration_sec):
+        call_count["n"] += 1
+        return 1, "simulated ffmpeg failure"
+
+    original = bs._run_ffmpeg_with_progress
+    bs._run_ffmpeg_with_progress = always_fails
+    try:
+        frames = bs.burn_with_fallback(src, entries, out, style={"boxEnabled": False})
+    finally:
+        bs._run_ffmpeg_with_progress = original
+
+    # Primary attempt + libx264 retry both went through the stub.
+    assert call_count["n"] == 2
+    assert frames > 0
+    assert os.path.exists(out)
+    assert os.path.getsize(out) > 1000
+
+
 if __name__ == "__main__":
     test_overlay_matches_draw_subtitle_no_box()
     test_overlay_matches_draw_subtitle_with_box()
@@ -182,4 +228,5 @@ if __name__ == "__main__":
     test_pick_encoder_returns_valid_tuple()
     test_burn_native_end_to_end()
     test_main_falls_back_to_legacy_burn_on_native_failure()
+    test_burn_native_retry_then_fallback_on_persistent_ffmpeg_failure()
     print("OK: burn_subtitles native-overlay self-check passed")
