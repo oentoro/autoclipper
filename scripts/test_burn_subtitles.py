@@ -119,6 +119,32 @@ def test_pick_encoder_returns_valid_tuple():
         assert name == "libx264"
 
 
+def test_burn_native_end_to_end():
+    """Synthetic tiny video + a couple of entries → burn_native succeeds,
+    produces a non-trivial output file. Requires ffmpeg on PATH."""
+    import subprocess as sp
+    import tempfile as tf
+    from burn_subtitles import burn_native
+
+    workdir = tf.mkdtemp(prefix="autoclipper_test_")
+    src = os.path.join(workdir, "src.mp4")
+    out = os.path.join(workdir, "out.mp4")
+    sp.run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=10",
+        "-pix_fmt", "yuv420p", src,
+    ], check=True)
+
+    entries = [
+        {"start": 0.0, "end": 1.2, "text": "Halo"},
+        {"start": 1.5, "end": 2.5, "text": "Dunia"},
+    ]
+    frames = burn_native(src, entries, out, style={"boxEnabled": False})
+    assert frames > 0
+    assert os.path.exists(out)
+    assert os.path.getsize(out) > 1000
+
+
 if __name__ == "__main__":
     test_overlay_matches_draw_subtitle_no_box()
     test_overlay_matches_draw_subtitle_with_box()
@@ -126,4 +152,5 @@ if __name__ == "__main__":
     test_overlay_is_transparent_outside_text()
     test_bitrate_for_resolution()
     test_pick_encoder_returns_valid_tuple()
+    test_burn_native_end_to_end()
     print("OK: burn_subtitles native-overlay self-check passed")
