@@ -375,6 +375,46 @@ def draw_subtitle(img, text, font, line_h, style):
                       stroke_fill=outline_rgb if outline_w > 0 else None)
         return img
 
+def render_overlay_image(text, font, line_h, style, w, h):
+    """
+    Render subtitle text onto a transparent RGBA canvas (w x h), reusing the
+    exact same layout/box/stroke logic as draw_subtitle — but always
+    targeting a transparent canvas instead of compositing onto a video
+    frame. Used to pre-render PNG overlays for the native ffmpeg path
+    (burn_native), so CJK/word-wrap/box-style behavior never diverges from
+    the per-frame path.
+    """
+    box_enabled = style.get("boxEnabled", False)
+    box_alpha = int(style.get("boxOpacity", 70) / 100 * 255)
+    if box_enabled and box_alpha > 0:
+        return _build_subtitle_overlay(text, font, line_h, style, w, h)
+
+    # Render on opaque black background to match draw_subtitle's antialiasing,
+    # then convert black to transparent.
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(overlay)
+    outline_w = int(style.get("outlineWidth", 2))
+    text_rgb = hex_to_rgb(style.get("textColor", "#ffffff"))
+    outline_rgb = hex_to_rgb(style.get("outlineColor", "#000000"))
+    layout = _compute_subtitle_layout(text, font, line_h, style, w, h)
+    for line, x, y, _ in layout:
+        draw.text((x, y), line, font=font, fill=text_rgb,
+                   stroke_width=outline_w,
+                   stroke_fill=outline_rgb if outline_w > 0 else None)
+
+    # Set alpha to 0 for black pixels, 255 for everything else
+    data = list(overlay.getdata())
+    new_data = []
+    for pixel in data:
+        r, g, b = pixel[:3]
+        if r == 0 and g == 0 and b == 0:
+            new_data.append((r, g, b, 0))
+        else:
+            new_data.append((r, g, b, 255))
+    result = Image.new("RGBA", (w, h))
+    result.putdata(new_data)
+    return result
+
 def draw_title(img, text, font, style):
     """Draw a persistent title at the top of the frame."""
     w, h = img.size
