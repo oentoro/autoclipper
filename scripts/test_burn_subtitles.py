@@ -145,6 +145,34 @@ def test_burn_native_end_to_end():
     assert os.path.getsize(out) > 1000
 
 
+def test_main_falls_back_to_legacy_burn_on_native_failure():
+    """If burn_native raises, the dispatch logic must call burn() instead
+    and still succeed — verified by calling the extracted dispatch function
+    directly with a monkeypatched burn_native that always raises."""
+    import burn_subtitles as bs
+
+    calls = {"native": 0, "legacy": 0}
+
+    def fake_native(*a, **kw):
+        calls["native"] += 1
+        raise RuntimeError("simulated native failure")
+
+    def fake_legacy(*a, **kw):
+        calls["legacy"] += 1
+        return 42
+
+    original_native, original_legacy = bs.burn_native, bs.burn
+    bs.burn_native, bs.burn = fake_native, fake_legacy
+    try:
+        frames = bs.burn_with_fallback("in.mp4", [], "out.mp4")
+    finally:
+        bs.burn_native, bs.burn = original_native, original_legacy
+
+    assert calls["native"] == 1
+    assert calls["legacy"] == 1
+    assert frames == 42
+
+
 if __name__ == "__main__":
     test_overlay_matches_draw_subtitle_no_box()
     test_overlay_matches_draw_subtitle_with_box()
@@ -153,4 +181,5 @@ if __name__ == "__main__":
     test_bitrate_for_resolution()
     test_pick_encoder_returns_valid_tuple()
     test_burn_native_end_to_end()
+    test_main_falls_back_to_legacy_burn_on_native_failure()
     print("OK: burn_subtitles native-overlay self-check passed")

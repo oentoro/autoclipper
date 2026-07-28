@@ -733,6 +733,21 @@ def burn_native(input_path, entries, output_path, font_size=0, font_path=None, s
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def burn_with_fallback(input_path, entries, output_path, font_size=0, font_path=None,
+                        style=None, title="", title_font_size=0, title_color="#ffffff"):
+    """Try the fast native ffmpeg-overlay path; fall back to the per-frame
+    PIL path unchanged if native fails for any reason."""
+    try:
+        return burn_native(input_path, entries, output_path, font_size=font_size,
+                            font_path=font_path, style=style, title=title,
+                            title_font_size=title_font_size, title_color=title_color)
+    except Exception as e:
+        emit_status(f"[burn] native path gagal ({e}), fallback ke metode lama")
+        return burn(input_path, entries, output_path, font_size=font_size,
+                    font_path=font_path, style=style, title=title,
+                    title_font_size=title_font_size, title_color=title_color)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("input")
@@ -759,7 +774,7 @@ if __name__ == "__main__":
         style = {}
 
     try:
-        frames = burn(
+        frames = burn_with_fallback(
             args.input, entries, args.output,
             font_size=args.font_size,
             font_path=args.font if args.font else None,
