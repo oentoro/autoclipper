@@ -3211,14 +3211,14 @@ fn whisper_catalog() -> [WhisperModelDef; 4] {
         },
         WhisperModelDef {
             id: "medium", name: "Whisper Medium",
-            mlx_repo: "mlx-community/whisper-medium-mlx",
+            mlx_repo: "mlx-community/whisper-medium-mlx-q4",
             fw_repo:  "Systran/faster-whisper-medium",
             size_mb:  769, preset: "accurate", preset_label: "Akurat",
             description: "Akurasi tinggi, lebih lambat — cocok untuk bahasa campuran atau aksen",
         },
         WhisperModelDef {
             id: "large-v3-turbo", name: "Whisper Large v3 Turbo",
-            mlx_repo: "mlx-community/whisper-large-v3-turbo",
+            mlx_repo: "mlx-community/whisper-large-v3-turbo-q4",
             fw_repo:  "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
             size_mb:  1_600, preset: "best", preset_label: "Terbaik",
             description: "Akurasi terbaik — ideal untuk bahasa campuran, terminologi khusus, atau kualitas audio rendah",
@@ -3250,18 +3250,33 @@ pub async fn list_whisper_models(app: tauri::AppHandle) -> Vec<WhisperModelInfo>
         let backend = if is_apple_silicon { "mlx" } else { "faster-whisper" };
         let repo    = if is_apple_silicon { def.mlx_repo } else { def.fw_repo };
 
+        // f16 fallback repos — Python falls back to these if q4 unavailable on Hub
+        let mlx_f16_fallback: Option<&str> = match def.id {
+            "medium"        => Some("mlx-community/whisper-medium-mlx"),
+            "large-v3-turbo"=> Some("mlx-community/whisper-large-v3-turbo"),
+            _               => None,
+        };
+
+        let check_all = |cache: &Path| -> Option<PathBuf> {
+            hf_model_cached(cache, repo).or_else(|| {
+                if is_apple_silicon {
+                    mlx_f16_fallback.and_then(|r| hf_model_cached(cache, r))
+                } else { None }
+            })
+        };
+
         // Check in HF cache
-        let mut cached_path = hf_model_cached(&hf_cache, repo);
+        let mut cached_path = check_all(&hf_cache);
 
         // Also check vendor/models dirs (faster-whisper may be downloaded there)
         if cached_path.is_none() {
             if let Some(ref vm) = vendor_models {
-                cached_path = hf_model_cached(vm, repo);
+                cached_path = check_all(vm);
             }
         }
         if cached_path.is_none() {
             if let Some(ref dm) = dev_models {
-                cached_path = hf_model_cached(dm, repo);
+                cached_path = check_all(dm);
             }
         }
 

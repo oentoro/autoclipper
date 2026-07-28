@@ -362,6 +362,7 @@ export default function ModelManager({
                           <span className="mm-model-name">{rec.name}</span>
                           {rec.tag && <span className="mm-tag recommended">{rec.tag}</span>}
                           {isSelected && <span className="mm-tag active">✓ Aktif</span>}
+                          {done && !isSelected && <span className="mm-tag active">✓ Tersedia</span>}
                           {rec.requires_token && <span className="mm-tag token">🔑 Token</span>}
                           {hasPartial && <span className="mm-tag partial">⏸ Tersimpan</span>}
                         </div>

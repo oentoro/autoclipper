@@ -59,7 +59,26 @@
       "Bash(xcode-select -p)",
       "Bash(git *)",
       "PowerShell(cd C:\\\\Users\\\\oentoro\\\\autoclipper\\\\src-tauri && cargo check 2>&1 | Where-Object { $_ -match \"^error\\\\[\" } | Select-Object -First 20)",
-      "PowerShell(yt-dlp *)"
+      "PowerShell(yt-dlp *)",
+      "Bash(/usr/bin/find . -iname \"*smart_crop*\")",
+      "Bash(/usr/bin/grep -n \"smart_crop\\\\|exec_smart_crop\" src-tauri/src/commands.rs)",
+      "Bash(/usr/bin/grep -n \"smart_crop\\\\|smartCrop\\\\|smart crop\\\\|aspect_ratio\\\\|aspectRatio\\\\|transition\" src/components/*.tsx src/App.tsx src/types.ts)",
+      "Bash(/usr/bin/grep -i \"smart\\\\|crop\")",
+      "Bash(/usr/bin/grep -rli \"smartcrop\\\\|smart_crop\" src/)",
+      "Bash(/usr/bin/grep -n \"smartCrop\" src/i18n.tsx)",
+      "Bash(/usr/bin/grep -n \"fn build_crop_filter\\\\|fn get_video_dims\" src-tauri/src/commands.rs)",
+      "Bash(/usr/bin/grep -rn \"center\" scripts/smart_crop.py src-tauri/src/commands.rs)",
+      "Bash(rtk proxy *)",
+      "Bash(rtk rg *)",
+      "Bash(echo \"node_modules exists: $?\")",
+      "Bash(echo \"target exists: $?\")",
+      "Bash(ln -s /Users/oentoro/Projects/autoclipper/src-tauri/vendor vendor)",
+      "Bash(bash /Users/oentoro/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/review-package f290b55 02a17b7)",
+      "Bash(ffmpeg -f lavfi -i testsrc=duration=2:size=320x240:rate=10 -pix_fmt yuv420p /tmp/sample.mp4)",
+      "Bash(ffmpeg -f lavfi -i testsrc=duration=2:size=320x240:rate=10 -pix_fmt yuv420p /tmp/sample.mp4 -loglevel quiet)",
+      "Bash(AUTOCLIPPER_FFMPEG=ffmpeg python3 *)",
+      "Bash(ffprobe -v error -show_format -show_streams /tmp/censored_output.mp4)",
+      "Bash(echo \"EXIT: $?\")"
     ]
   }
 }
