@@ -50,23 +50,38 @@ def emit_status(msg: str) -> None:
 
 # ── InsightFace SCRFD (frontal + profil 0°–90°+) ─────────────────────────────
 
+def _select_insightface_providers(available_providers: list) -> tuple:
+    """
+    Pick (ctx_id, device_label, providers) for InsightFace given the list of
+    onnxruntime execution providers available on this machine. Priority:
+    CUDA (Nvidia GPU) > CoreML (Apple Neural Engine/GPU) > CPU.
+    `providers` is None when relying on ctx_id alone (CUDA/CPU — insightface's
+    own ctx_id-to-provider mapping already handles these); it's an explicit
+    provider list only for CoreML, which has no device-index concept.
+    """
+    if "CUDAExecutionProvider" in available_providers:
+        return 0, "CUDA GPU", None
+    if "CoreMLExecutionProvider" in available_providers:
+        return 0, "CoreML", ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    return -1, "CPU", None
+
+
 def _load_insightface():
     """Return (FaceAnalysis app, device_label) or (None, None) if unavailable."""
     try:
         from insightface.app import FaceAnalysis
 
-        ctx_id = -1          # default: CPU
-        device_label = "CPU"
+        ctx_id, device_label, providers = -1, "CPU", None
         try:
             import onnxruntime as ort
-            providers = ort.get_available_providers()
-            if "CUDAExecutionProvider" in providers:
-                ctx_id = 0
-                device_label = "CUDA GPU"
+            ctx_id, device_label, providers = _select_insightface_providers(ort.get_available_providers())
         except Exception:
             pass
 
-        app = FaceAnalysis(name="buffalo_sc", allowed_modules=["detection"])
+        kwargs = {"name": "buffalo_sc", "allowed_modules": ["detection"]}
+        if providers is not None:
+            kwargs["providers"] = providers
+        app = FaceAnalysis(**kwargs)
         app.prepare(ctx_id=ctx_id, det_size=(640, 640))
         return app, device_label
     except Exception:

@@ -4,7 +4,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(__file__))
-from smart_crop import pick_speaker_cx  # noqa: E402
+from smart_crop import pick_speaker_cx, _select_insightface_providers  # noqa: E402
 
 
 def face(cx):
@@ -38,9 +38,39 @@ def test_no_faces():
     assert pick_speaker_cx([], None, None, locked_cx=100) is None
 
 
+def test_select_insightface_providers_prefers_cuda():
+    ctx_id, label, providers = _select_insightface_providers(
+        ["CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"]
+    )
+    assert ctx_id == 0
+    assert label == "CUDA GPU"
+    assert providers is None
+
+
+def test_select_insightface_providers_falls_back_to_coreml():
+    ctx_id, label, providers = _select_insightface_providers(
+        ["CoreMLExecutionProvider", "AzureExecutionProvider", "CPUExecutionProvider"]
+    )
+    assert ctx_id == 0
+    assert label == "CoreML"
+    assert providers == ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+
+
+def test_select_insightface_providers_falls_back_to_cpu():
+    ctx_id, label, providers = _select_insightface_providers(
+        ["AzureExecutionProvider", "CPUExecutionProvider"]
+    )
+    assert ctx_id == -1
+    assert label == "CPU"
+    assert providers is None
+
+
 if __name__ == "__main__":
     test_ambiguous_prefers_locked_face()
     test_no_lock_yet_falls_back_to_sharpest()
     test_single_face_shortcut()
     test_no_faces()
+    test_select_insightface_providers_prefers_cuda()
+    test_select_insightface_providers_falls_back_to_coreml()
+    test_select_insightface_providers_falls_back_to_cpu()
     print("OK: pick_speaker_cx continuity self-check passed")
