@@ -137,6 +137,8 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
   const [smartCrop, setSmartCrop] = useState<boolean>(false);
   const [smartCropTransition, setSmartCropTransition] = useState<"smooth" | "aggressive">("smooth");
   const [censorFaces, setCensorFaces] = useState<boolean>(false);
+  const [censorMode, setCensorMode] = useState<"mosaic" | "image">("mosaic");
+  const [censorImagePath, setCensorImagePath] = useState<string>("");
   const [subtitleFontSize, setSubtitleFontSize] = useState<number>(0);
   const [subtitleFont, setSubtitleFont] = useState<string>("");
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
@@ -473,6 +475,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
         smartCrop,
         smartCropTransition,
         censorFaces,
+        censorImagePath: censorFaces && censorMode === "image" ? censorImagePath : "",
         fontSize: subtitleFontSize,
         fontPath: subtitleFont,
         subtitleStyleJson: JSON.stringify(subtitleStyle),
@@ -775,6 +778,10 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             onSmartCropTransitionChange={setSmartCropTransition}
             censorFaces={censorFaces}
             onCensorFacesChange={setCensorFaces}
+            censorMode={censorMode}
+            onCensorModeChange={setCensorMode}
+            censorImagePath={censorImagePath}
+            onCensorImagePathChange={setCensorImagePath}
             subtitleFontSize={subtitleFontSize}
             subtitleFont={subtitleFont}
             systemFonts={systemFonts}
