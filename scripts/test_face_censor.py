@@ -5,7 +5,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
-from face_censor import pixelate_region  # noqa: E402
+from face_censor import pixelate_region, overlay_image_region  # noqa: E402
 
 
 def test_pixelate_reduces_variance():
@@ -35,8 +35,38 @@ def test_padding_expands_processed_area():
     assert changed_padded > changed_no_pad
 
 
+def test_overlay_opaque_replaces_region():
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    overlay = np.full((10, 10, 3), 200, dtype=np.uint8)  # abu-abu solid
+    overlay_image_region(frame, (20, 20, 60, 60), overlay, padding=0.0)
+    roi = frame[20:80, 20:80]
+    assert np.all(roi == 200)
+
+
+def test_overlay_alpha_blends_with_original():
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)  # semua hitam (0)
+    overlay = np.zeros((10, 10, 4), dtype=np.uint8)
+    overlay[:, :, :3] = 200  # warna abu-abu solid
+    overlay[:, :, 3] = 128   # alpha ~50%
+    overlay_image_region(frame, (20, 20, 60, 60), overlay, padding=0.0)
+    roi = frame[20:80, 20:80]
+    # hasil blend harus di antara 0 (asli) dan 200 (overlay), bukan salah satu ekstrem
+    assert np.all(roi > 0)
+    assert np.all(roi < 200)
+
+
+def test_overlay_clamps_to_frame_edges():
+    frame = np.zeros((50, 50, 3), dtype=np.uint8)
+    overlay = np.full((10, 10, 3), 100, dtype=np.uint8)
+    result = overlay_image_region(frame, (-10, -10, 30, 30), overlay, padding=0.2)
+    assert result.shape == (50, 50, 3)
+
+
 if __name__ == "__main__":
     test_pixelate_reduces_variance()
     test_pixelate_clamps_to_frame_edges()
     test_padding_expands_processed_area()
-    print("OK: pixelate_region self-check passed")
+    test_overlay_opaque_replaces_region()
+    test_overlay_alpha_blends_with_original()
+    test_overlay_clamps_to_frame_edges()
+    print("OK: pixelate_region + overlay_image_region self-check passed")

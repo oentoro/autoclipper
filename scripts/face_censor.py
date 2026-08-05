@@ -29,6 +29,7 @@ from smart_crop import (
 
 try:
     import cv2
+    import numpy as np
 except ImportError as _e:
     os.write(2, (f"Error: {_e}\nFace Censor membutuhkan opencv-python.\n"
                  "Jalankan: python3 -m pip install opencv-python\n").encode("utf-8"))
@@ -62,6 +63,40 @@ def pixelate_region(frame, bbox, padding: float = 0.15):
     small = cv2.resize(roi, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
     mosaic = cv2.resize(small, (rw, rh), interpolation=cv2.INTER_NEAREST)
     frame[y1:y2, x1:x2] = mosaic
+    return frame
+
+
+def overlay_image_region(frame, bbox, overlay, padding: float = 0.15):
+    """
+    Tutup area bbox (x, y, w, h) di frame dengan gambar overlay, in-place.
+    Overlay di-resize (stretch) ke ukuran area target. Kalau overlay punya
+    channel alpha (BGRA), di-blend; kalau opaque (BGR), full replace.
+    Bbox diperbesar dengan padding sama seperti pixelate_region.
+    Return frame yang sama (dimodifikasi in-place).
+    """
+    h, w = frame.shape[:2]
+    bx, by, bw, bh = bbox
+    pad_x = int(bw * padding)
+    pad_y = int(bh * padding)
+    x1 = max(0, bx - pad_x)
+    y1 = max(0, by - pad_y)
+    x2 = min(w, bx + bw + pad_x)
+    y2 = min(h, by + bh + pad_y)
+    if x2 <= x1 or y2 <= y1:
+        return frame
+
+    target_w, target_h = x2 - x1, y2 - y1
+    resized = cv2.resize(overlay, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+    if resized.shape[2] == 4:
+        overlay_bgr = resized[:, :, :3].astype(np.float32)
+        alpha = (resized[:, :, 3].astype(np.float32) / 255.0)[:, :, None]
+        roi = frame[y1:y2, x1:x2].astype(np.float32)
+        blended = overlay_bgr * alpha + roi * (1.0 - alpha)
+        frame[y1:y2, x1:x2] = blended.astype(np.uint8)
+    else:
+        frame[y1:y2, x1:x2] = resized
+
     return frame
 
 
