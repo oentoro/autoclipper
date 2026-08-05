@@ -2195,6 +2195,7 @@ async fn exec_censor_faces(
     ffmpeg: &str,
     input: &str,
     output: &str,
+    censor_image: Option<&str>,
     pid_cell: &Mutex<Option<u32>>,
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -2202,8 +2203,11 @@ async fn exec_censor_faces(
 
     let script = find_script(app, "face_censor.py");
     let mut cmd = TokioCommand::new(python);
-    cmd.args([&script, input, output])
-        .env("AUTOCLIPPER_FFMPEG", ffmpeg)
+    cmd.args([&script, input, output]);
+    if let Some(img) = censor_image {
+        cmd.args(["--censor-image", img]);
+    }
+    cmd.env("AUTOCLIPPER_FFMPEG", ffmpeg)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
@@ -2266,6 +2270,7 @@ pub async fn clip_video(
     smart_crop: bool,
     smart_crop_transition: String,
     censor_faces: bool,
+    censor_image_path: String,
     font_size: u32,
     font_path: String,
     subtitle_style_json: String,
@@ -2364,7 +2369,10 @@ pub async fn clip_video(
 
         let r: Result<(), String> = match stage {
             Stage::SmartCrop => exec_smart_crop(&app, &python, &ffmpeg, &current_path, &dest, &aspect_ratio, &smart_crop_transition, pid_cell).await,
-            Stage::CensorFaces => exec_censor_faces(&app, &python, &ffmpeg, &current_path, &dest, pid_cell).await,
+            Stage::CensorFaces => {
+                let censor_img = if censor_image_path.trim().is_empty() { None } else { Some(censor_image_path.as_str()) };
+                exec_censor_faces(&app, &python, &ffmpeg, &current_path, &dest, censor_img, pid_cell).await
+            }
             Stage::BurnSubs => {
                 let entries = if burn_subtitles { build_retimed_entries(&groups, eff_subtitle_mode, &original_by_index) } else { vec![] };
                 exec_burn_subs(&app, &python, &ffmpeg, &ffprobe, &current_path, &dest, entries, font_size, &font_path, &subtitle_style_json, eff_title, eff_title_fs, eff_title_color, pid_cell).await
