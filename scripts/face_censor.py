@@ -101,9 +101,10 @@ def overlay_image_region(frame, bbox, overlay, padding: float = 0.15):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Face censor — pixelate semua wajah terdeteksi")
+    parser = argparse.ArgumentParser(description="Face censor — pixelate atau tutup gambar semua wajah terdeteksi")
     parser.add_argument("input",  help="Input video path")
     parser.add_argument("output", help="Output video path")
+    parser.add_argument("--censor-image", default=None, help="Path gambar buat nutup wajah (opsional, default: mosaic)")
     args = parser.parse_args()
 
     ffmpeg = os.environ.get("AUTOCLIPPER_FFMPEG", "ffmpeg")
@@ -137,6 +138,14 @@ def main():
                 emit_status("[face_censor] Detector: YuNet — CPU")
             else:
                 emit_status("[face_censor] Detector: Haar cascade — CPU (fallback)")
+
+    overlay_img = None
+    if args.censor_image:
+        overlay_img = cv2.imread(args.censor_image, cv2.IMREAD_UNCHANGED)
+        if overlay_img is None:
+            emit_status(f"[face_censor] Gagal load gambar sensor ({args.censor_image}), pakai mosaic.")
+        else:
+            emit_status(f"[face_censor] Mode: gambar ({os.path.basename(args.censor_image)})")
 
     cascade_front   = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     cascade_profile = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
@@ -178,7 +187,10 @@ def main():
             faces = _detect_cascade(gray, cascade_front, cascade_profile)
 
         for f in faces:
-            pixelate_region(frame, f["bbox"], padding=0.15)
+            if overlay_img is not None:
+                overlay_image_region(frame, f["bbox"], overlay_img, padding=0.15)
+            else:
+                pixelate_region(frame, f["bbox"], padding=0.15)
 
         try:
             proc.stdin.write(frame.tobytes())
