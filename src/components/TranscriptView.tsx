@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useLang } from "../i18n";
 import type { SrtSegment, Section, FontInfo, LlmModel, SubtitleStyle, ManualClip } from "../types";
 
@@ -45,6 +46,10 @@ interface Props {
   onSmartCropTransitionChange: (v: "smooth" | "aggressive") => void;
   censorFaces: boolean;
   onCensorFacesChange: (v: boolean) => void;
+  censorMode: "mosaic" | "image";
+  onCensorModeChange: (v: "mosaic" | "image") => void;
+  censorImagePath: string;
+  onCensorImagePathChange: (v: string) => void;
   subtitleFontSize: number;
   subtitleFont: string;
   systemFonts: FontInfo[];
@@ -142,6 +147,10 @@ export default function TranscriptView({
   onSmartCropTransitionChange,
   censorFaces,
   onCensorFacesChange,
+  censorMode,
+  onCensorModeChange,
+  censorImagePath,
+  onCensorImagePathChange,
   subtitleFontSize,
   subtitleFont,
   systemFonts,
@@ -290,6 +299,14 @@ export default function TranscriptView({
     const segs = segmentsOf(section);
     if (segs.length === 0) return "";
     return `${formatTime(segs[0].start)} – ${formatTime(segs[segs.length - 1].end)}`;
+  }
+
+  async function handlePickCensorImage() {
+    const path = await open({
+      filters: [{ name: "Gambar", extensions: ["png", "jpg", "jpeg"] }],
+      title: "Pilih gambar sensor wajah",
+    });
+    if (path) onCensorImagePathChange(path as string);
   }
 
   return (
@@ -636,6 +653,40 @@ export default function TranscriptView({
               <span className="smart-crop-hint">{t("censorFacesHint")}</span>
             </span>
           </label>
+          {censorFaces && (
+            <>
+              <div className="smart-crop-transition">
+                {([
+                  { value: "mosaic", labelKey: "censorModeMosaic" },
+                  { value: "image",  labelKey: "censorModeImage"  },
+                ] as const).map(opt => (
+                  <button
+                    key={opt.value}
+                    className={`transition-btn ${censorMode === opt.value ? "active" : ""}`}
+                    onClick={() => onCensorModeChange(opt.value)}
+                  >
+                    {t(opt.labelKey)}
+                  </button>
+                ))}
+              </div>
+              {censorMode === "image" && (
+                <div className="censor-image-picker">
+                  <button
+                    type="button"
+                    className="btn btn-secondary censor-image-btn"
+                    onClick={handlePickCensorImage}
+                  >
+                    {t("censorImagePickLabel")}
+                  </button>
+                  {censorImagePath ? (
+                    <span className="smart-crop-hint">{censorImagePath.split(/[\\/]/).pop()}</span>
+                  ) : (
+                    <span className="smart-crop-hint">{t("censorImageEmptyHint")}</span>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Subtitle */}
