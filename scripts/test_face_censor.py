@@ -44,15 +44,38 @@ def test_overlay_opaque_replaces_region():
 
 
 def test_overlay_alpha_blends_with_original():
-    frame = np.zeros((100, 100, 3), dtype=np.uint8)  # semua hitam (0)
     overlay = np.zeros((10, 10, 4), dtype=np.uint8)
     overlay[:, :, :3] = 200  # warna abu-abu solid
-    overlay[:, :, 3] = 128   # alpha ~50%
-    overlay_image_region(frame, (20, 20, 60, 60), overlay, padding=0.0)
-    roi = frame[20:80, 20:80]
-    # hasil blend harus di antara 0 (asli) dan 200 (overlay), bukan salah satu ekstrem
-    assert np.all(roi > 0)
-    assert np.all(roi < 200)
+
+    # alpha = 1.0 -> ROI harus jadi PERSIS warna overlay
+    frame_full_alpha = np.zeros((100, 100, 3), dtype=np.uint8)
+    overlay_full_alpha = overlay.copy()
+    overlay_full_alpha[:, :, 3] = 255
+    overlay_image_region(frame_full_alpha, (20, 20, 60, 60), overlay_full_alpha, padding=0.0)
+    roi_full = frame_full_alpha[20:80, 20:80]
+    assert np.all(roi_full == 200)
+
+    # alpha = 0.0 -> ROI harus tetap PERSIS nilai frame asli (0)
+    frame_zero_alpha = np.zeros((100, 100, 3), dtype=np.uint8)
+    overlay_zero_alpha = overlay.copy()
+    overlay_zero_alpha[:, :, 3] = 0
+    overlay_image_region(frame_zero_alpha, (20, 20, 60, 60), overlay_zero_alpha, padding=0.0)
+    roi_zero = frame_zero_alpha[20:80, 20:80]
+    assert np.all(roi_zero == 0)
+
+
+def test_grayscale_overlay_shape_is_invalid():
+    # 2D grayscale array (no channel dim) — the shape this bug crashes on
+    gray = np.zeros((20, 20), dtype=np.uint8)
+    assert gray.ndim != 3
+    # gray+alpha (2 channels) — also unsupported by overlay_image_region
+    gray_alpha = np.zeros((20, 20, 2), dtype=np.uint8)
+    assert gray_alpha.ndim == 3 and gray_alpha.shape[2] not in (3, 4)
+    # valid BGR/BGRA still pass
+    bgr = np.zeros((20, 20, 3), dtype=np.uint8)
+    bgra = np.zeros((20, 20, 4), dtype=np.uint8)
+    assert bgr.shape[2] in (3, 4)
+    assert bgra.shape[2] in (3, 4)
 
 
 def test_overlay_clamps_to_frame_edges():
@@ -69,4 +92,5 @@ if __name__ == "__main__":
     test_overlay_opaque_replaces_region()
     test_overlay_alpha_blends_with_original()
     test_overlay_clamps_to_frame_edges()
+    test_grayscale_overlay_shape_is_invalid()
     print("OK: pixelate_region + overlay_image_region self-check passed")

@@ -144,6 +144,9 @@ def main():
         overlay_img = cv2.imread(args.censor_image, cv2.IMREAD_UNCHANGED)
         if overlay_img is None:
             emit_status(f"[face_censor] Gagal load gambar sensor ({args.censor_image}), pakai mosaic.")
+        elif overlay_img.ndim != 3 or overlay_img.shape[2] not in (3, 4):
+            emit_status(f"[face_censor] Format gambar tidak didukung ({args.censor_image}), pakai mosaic.")
+            overlay_img = None
         else:
             emit_status(f"[face_censor] Mode: gambar ({os.path.basename(args.censor_image)})")
 
