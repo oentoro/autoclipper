@@ -50,6 +50,8 @@ interface Props {
   onCensorModeChange: (v: "mosaic" | "image") => void;
   censorImagePath: string;
   onCensorImagePathChange: (v: string) => void;
+  censorTarget: "face" | "head";
+  onCensorTargetChange: (v: "face" | "head") => void;
   subtitleFontSize: number;
   subtitleFont: string;
   systemFonts: FontInfo[];
@@ -151,6 +153,8 @@ export default function TranscriptView({
   onCensorModeChange,
   censorImagePath,
   onCensorImagePathChange,
+  censorTarget,
+  onCensorTargetChange,
   subtitleFontSize,
   subtitleFont,
   systemFonts,
@@ -655,6 +659,20 @@ export default function TranscriptView({
           </label>
           {censorFaces && (
             <>
+              <div className="smart-crop-transition">
+                {([
+                  { value: "face", labelKey: "censorTargetFace" },
+                  { value: "head", labelKey: "censorTargetHead" },
+                ] as const).map(opt => (
+                  <button
+                    key={opt.value}
+                    className={`transition-btn ${censorTarget === opt.value ? "active" : ""}`}
+                    onClick={() => onCensorTargetChange(opt.value)}
+                  >
+                    {t(opt.labelKey)}
+                  </button>
+                ))}
+              </div>
               <div className="smart-crop-transition">
                 {([
                   { value: "mosaic", labelKey: "censorModeMosaic" },
