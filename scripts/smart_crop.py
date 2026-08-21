@@ -289,6 +289,125 @@ def _load_yunet(frame_w: int, frame_h: int):
             return None
 
 
+# ── Pose-based head detection ─────────────────────────────────────────────────
+
+_POSE_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+)
+_POSE_FILENAME = "pose_landmarker_lite.task"
+_POSE_MAX_PERSONS = 6  # cap wajar buat mosaic multi-speaker
+
+
+def _pose_model_path() -> str:
+    cache = os.path.expanduser("~/.cache/autoclipper")
+    return os.path.join(cache, _POSE_FILENAME)
+
+
+def _download_pose_model() -> bool:
+    path = _pose_model_path()
+    if os.path.exists(path):
+        return True
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        emit_status("[smart_crop] Mengunduh model PoseLandmarker (~5 MB)...")
+        urllib.request.urlretrieve(_POSE_URL, path + ".tmp")
+        os.rename(path + ".tmp", path)
+        emit_status("[smart_crop] Model PoseLandmarker berhasil diunduh.")
+        return True
+    except Exception as e:
+        emit_status(f"[smart_crop] Download PoseLandmarker gagal ({e}), pakai fallback.")
+        if os.path.exists(path + ".tmp"):
+            try:
+                os.remove(path + ".tmp")
+            except OSError:
+                pass
+        return False
+
+
+def _load_pose_landmarker():
+    """Return mediapipe.tasks.python.vision.PoseLandmarker instance, atau None."""
+    try:
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision
+    except Exception:
+        return None
+    if not _download_pose_model():
+        return None
+    try:
+        base_options = mp_python.BaseOptions(model_asset_path=_pose_model_path())
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_poses=_POSE_MAX_PERSONS,
+            min_pose_detection_confidence=0.5,
+        )
+        return vision.PoseLandmarker.create_from_options(options)
+    except Exception as e:
+        emit_status(f"[smart_crop] PoseLandmarker load gagal ({e}), pakai fallback.")
+        return None
+
+
+# Landmark index (MediaPipe Pose, 33 titik):
+# 0 nose, 2 left_eye, 5 right_eye, 7 left_ear, 8 right_ear,
+# 11 left_shoulder, 12 right_shoulder
+_POSE_FACE_IDX = (0, 2, 5, 7, 8)
+_POSE_SHOULDER_IDX = (11, 12)
+
+
+def _head_bbox_from_landmarks(landmarks, w: int, h: int):
+    """
+    landmarks: sequence 33 objek dengan atribut .x .y .visibility (normalized 0..1),
+    format sama seperti PoseLandmarkerResult.pose_landmarks[i].
+    Return {"bbox": (x, y, w, h), "score": 1.0} atau None kalau landmark ga cukup.
+    """
+    pts_visible = [(landmarks[i].x * w, landmarks[i].y * h) for i in _POSE_FACE_IDX
+                   if landmarks[i].visibility > 0.5]
+    shoulder_pts = [(landmarks[i].x * w, landmarks[i].y * h) for i in _POSE_SHOULDER_IDX
+                    if landmarks[i].visibility > 0.5]
+
+    if not pts_visible and len(shoulder_pts) < 2:
+        return None
+
+    shoulder_w = abs(shoulder_pts[0][0] - shoulder_pts[1][0]) if len(shoulder_pts) == 2 else None
+
+    if pts_visible:
+        xs = [p[0] for p in pts_visible]
+        ys = [p[1] for p in pts_visible]
+        cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+        scale = shoulder_w if shoulder_w else (max(xs) - min(xs) + 40)
+    else:
+        cx = (shoulder_pts[0][0] + shoulder_pts[1][0]) / 2
+        cy = min(shoulder_pts[0][1], shoulder_pts[1][1]) - shoulder_w * 0.6
+        scale = shoulder_w
+
+    half = max(20, scale * 0.7)
+    bx = int(max(0, cx - half))
+    by = int(max(0, cy - half * 1.3))
+    bw = int(min(w, cx + half) - bx)
+    bh = int(min(h, cy + half * 0.9) - by)
+    if bw <= 0 or bh <= 0:
+        return None
+    return {"bbox": (bx, by, bw, bh), "score": 1.0}
+
+
+def _detect_pose_heads(frame, landmarker) -> list[dict]:
+    """Return list of {"bbox": (x,y,w,h), "score": float}, satu per orang terdeteksi."""
+    import mediapipe as mp
+    h, w = frame.shape[:2]
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB,
+                         data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    result = landmarker.detect(mp_image)
+    if not result or not result.pose_landmarks:
+        return []
+    heads = []
+    for landmarks in result.pose_landmarks:
+        head = _head_bbox_from_landmarks(landmarks, w, h)
+        if head is not None:
+            heads.append(head)
+    return heads
+
+
 # ── Non-max suppression ───────────────────────────────────────────────────────
 
 def _nms(boxes: list, iou_thr: float = 0.35) -> list:
