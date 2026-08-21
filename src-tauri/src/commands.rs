@@ -2196,6 +2196,7 @@ async fn exec_censor_faces(
     input: &str,
     output: &str,
     censor_image: Option<&str>,
+    censor_target: Option<&str>,
     pid_cell: &Mutex<Option<u32>>,
 ) -> Result<(), String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -2206,6 +2207,9 @@ async fn exec_censor_faces(
     cmd.args([&script, input, output]);
     if let Some(img) = censor_image {
         cmd.args(["--censor-image", img]);
+    }
+    if let Some(target) = censor_target {
+        cmd.args(["--target", target]);
     }
     cmd.env("AUTOCLIPPER_FFMPEG", ffmpeg)
         .stdout(std::process::Stdio::piped())
@@ -2271,6 +2275,7 @@ pub async fn clip_video(
     smart_crop_transition: String,
     censor_faces: bool,
     censor_image_path: String,
+    censor_target: String,
     font_size: u32,
     font_path: String,
     subtitle_style_json: String,
@@ -2371,7 +2376,8 @@ pub async fn clip_video(
             Stage::SmartCrop => exec_smart_crop(&app, &python, &ffmpeg, &current_path, &dest, &aspect_ratio, &smart_crop_transition, pid_cell).await,
             Stage::CensorFaces => {
                 let censor_img = if censor_image_path.trim().is_empty() { None } else { Some(censor_image_path.as_str()) };
-                exec_censor_faces(&app, &python, &ffmpeg, &current_path, &dest, censor_img, pid_cell).await
+                let censor_tgt = if censor_target == "head" { Some("head") } else { None };
+                exec_censor_faces(&app, &python, &ffmpeg, &current_path, &dest, censor_img, censor_tgt, pid_cell).await
             }
             Stage::BurnSubs => {
                 let entries = if burn_subtitles { build_retimed_entries(&groups, eff_subtitle_mode, &original_by_index) } else { vec![] };
