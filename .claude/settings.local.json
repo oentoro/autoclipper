@@ -116,7 +116,20 @@
       "Bash(~/.autoclipper/venv/bin/python3 *)",
       "Bash(AUTOCLIPPER_FFMPEG=ffmpeg time ~/.autoclipper/venv/bin/python3 scripts/smart_crop.py /private/tmp/claude-501/-Users-oentoro-Projects-autoclipper/bbe9ac21-6c75-44f7-935b-e2ceee3e509d/scratchpad/sc_sample2.mp4 /private/tmp/claude-501/-Users-oentoro-Projects-autoclipper/bbe9ac21-6c75-44f7-935b-e2ceee3e509d/scratchpad/sc_out3.mp4 --ratio 9:16 --transition smooth)",
       "Bash(export AUTOCLIPPER_FFMPEG=ffmpeg)",
-      "Bash(ffmpeg -y -hide_banner -loglevel error -f lavfi -i testsrc=duration=180:size=1920x1080:rate=30 -f lavfi -i sine=frequency=440:duration=180 -pix_fmt yuv420p -c:v libx264 -preset fast -crf 23 -c:a aac /private/tmp/claude-501/-Users-oentoro-Projects-autoclipper/bbe9ac21-6c75-44f7-935b-e2ceee3e509d/scratchpad/sc_long.mp4)"
+      "Bash(ffmpeg -y -hide_banner -loglevel error -f lavfi -i testsrc=duration=180:size=1920x1080:rate=30 -f lavfi -i sine=frequency=440:duration=180 -pix_fmt yuv420p -c:v libx264 -preset fast -crf 23 -c:a aac /private/tmp/claude-501/-Users-oentoro-Projects-autoclipper/bbe9ac21-6c75-44f7-935b-e2ceee3e509d/scratchpad/sc_long.mp4)",
+      "Bash(bash /Users/oentoro/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-08-06-face-censor-image-mode.md 3)",
+      "Bash(ln -s /Users/oentoro/Projects/autoclipper/src-tauri/vendor /Users/oentoro/Projects/autoclipper/.claude/worktrees/face-censor-image-mode/src-tauri/vendor)",
+      "Bash(bash /Users/oentoro/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-08-06-face-censor-image-mode.md 4)",
+      "Bash(bash /Users/oentoro/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-08-06-face-censor-image-mode.md 5)",
+      "Bash(echo \"tsc exit=$?\")",
+      "Bash(npx tsc *)",
+      "Bash(cargo check *)",
+      "Bash(/usr/bin/git -C /Users/oentoro/Projects/autoclipper status --short scripts/face_censor.py)",
+      "Bash(/usr/bin/git -C /Users/oentoro/Projects/autoclipper diff --stat -- scripts/face_censor.py)",
+      "Bash(/usr/bin/git -C /Users/oentoro/Projects/autoclipper checkout -- scripts/face_censor.py)",
+      "Bash(/usr/bin/git -C /Users/oentoro/Projects/autoclipper status --short)",
+      "Bash(echo \"tsc exit: $?\")",
+      "Bash(/usr/bin/git worktree *)"
     ]
   }
 }
