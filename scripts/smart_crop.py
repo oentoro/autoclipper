@@ -293,9 +293,9 @@ def _load_yunet(frame_w: int, frame_h: int):
 
 _POSE_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-    "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+    "pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 )
-_POSE_FILENAME = "pose_landmarker_lite.task"
+_POSE_FILENAME = "pose_landmarker_lite_v1.task"
 _POSE_MAX_PERSONS = 6  # cap wajar buat mosaic multi-speaker
 
 
@@ -362,9 +362,9 @@ def _head_bbox_from_landmarks(landmarks, w: int, h: int):
     Return {"bbox": (x, y, w, h), "score": 1.0} atau None kalau landmark ga cukup.
     """
     pts_visible = [(landmarks[i].x * w, landmarks[i].y * h) for i in _POSE_FACE_IDX
-                   if landmarks[i].visibility > 0.5]
+                   if (landmarks[i].visibility or 0.0) > 0.5]
     shoulder_pts = [(landmarks[i].x * w, landmarks[i].y * h) for i in _POSE_SHOULDER_IDX
-                    if landmarks[i].visibility > 0.5]
+                    if (landmarks[i].visibility or 0.0) > 0.5]
 
     if not pts_visible and len(shoulder_pts) < 2:
         return None
@@ -378,8 +378,14 @@ def _head_bbox_from_landmarks(landmarks, w: int, h: int):
         scale = shoulder_w if shoulder_w else (max(xs) - min(xs) + 40)
     else:
         cx = (shoulder_pts[0][0] + shoulder_pts[1][0]) / 2
-        cy = min(shoulder_pts[0][1], shoulder_pts[1][1]) - shoulder_w * 0.6
-        scale = shoulder_w
+        # shoulder_w bisa 0 kalau kedua bahu proyeksinya persis sama x (mis.
+        # profil tegak lurus ke kamera). Tanpa fallback ini `scale` jadi 0 dan
+        # bbox kepala mengecil jadi ~40px — nyaris tidak menutupi kepala asli,
+        # padahal ini fitur privasi. 80px adalah perkiraan lebar bahu minimum
+        # yang masuk akal di skala piksel absolut frame video umum.
+        shoulder_w_safe = shoulder_w if shoulder_w else 80
+        cy = min(shoulder_pts[0][1], shoulder_pts[1][1]) - shoulder_w_safe * 0.6
+        scale = shoulder_w_safe
 
     half = max(20, scale * 0.7)
     bx = int(max(0, cx - half))

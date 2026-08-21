@@ -126,22 +126,6 @@ def main():
     emit_status(f"[face_censor] {src_w}x{src_h} — mendeteksi & mensensor wajah tiap frame...")
     emit_progress(0)
 
-    insight_app, insight_device = _load_insightface()
-    mp_detector = None
-    yunet = None
-    if insight_app is not None:
-        emit_status(f"[face_censor] Detector: InsightFace SCRFD — {insight_device}")
-    else:
-        mp_detector = _load_mediapipe()
-        if mp_detector is not None:
-            emit_status("[face_censor] Detector: MediaPipe — CPU")
-        else:
-            yunet = _load_yunet(src_w, src_h)
-            if yunet is not None:
-                emit_status("[face_censor] Detector: YuNet — CPU")
-            else:
-                emit_status("[face_censor] Detector: Haar cascade — CPU (fallback)")
-
     padding = 0.15
     pose_landmarker = None
     if args.target == "head":
@@ -151,6 +135,28 @@ def main():
             padding = 0.6
         else:
             emit_status("[face_censor] Detector: MediaPipe PoseLandmarker (target: kepala)")
+
+    insight_app, insight_device = None, None
+    mp_detector = None
+    yunet = None
+    if pose_landmarker is None:
+        # target="face", ATAU target="head" tapi pose landmarker gagal load —
+        # baru load chain detektor wajah. Kalau pose landmarker berhasil, chain
+        # ini tidak pernah dipakai, jadi tidak perlu di-load sama sekali (hemat
+        # beberapa detik startup + hindari status log yang membingungkan).
+        insight_app, insight_device = _load_insightface()
+        if insight_app is not None:
+            emit_status(f"[face_censor] Detector: InsightFace SCRFD — {insight_device}")
+        else:
+            mp_detector = _load_mediapipe()
+            if mp_detector is not None:
+                emit_status("[face_censor] Detector: MediaPipe — CPU")
+            else:
+                yunet = _load_yunet(src_w, src_h)
+                if yunet is not None:
+                    emit_status("[face_censor] Detector: YuNet — CPU")
+                else:
+                    emit_status("[face_censor] Detector: Haar cascade — CPU (fallback)")
 
     overlay_img = None
     if args.censor_image:
