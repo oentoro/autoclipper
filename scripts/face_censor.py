@@ -25,6 +25,8 @@ from smart_crop import (
     _load_yunet,
     _detect_yunet,
     _detect_cascade,
+    _load_pose_landmarker,
+    _detect_pose_heads,
 )
 
 try:
@@ -101,10 +103,11 @@ def overlay_image_region(frame, bbox, overlay, padding: float = 0.15):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Face censor — pixelate atau tutup gambar semua wajah terdeteksi")
+    parser = argparse.ArgumentParser(description="Face censor — pixelate atau tutup gambar semua wajah/kepala terdeteksi")
     parser.add_argument("input",  help="Input video path")
     parser.add_argument("output", help="Output video path")
     parser.add_argument("--censor-image", default=None, help="Path gambar buat nutup wajah (opsional, default: mosaic)")
+    parser.add_argument("--target", choices=["face", "head"], default="face", help="Target sensor: 'face' (default) atau 'head'")
     args = parser.parse_args()
 
     ffmpeg = os.environ.get("AUTOCLIPPER_FFMPEG", "ffmpeg")
@@ -123,21 +126,37 @@ def main():
     emit_status(f"[face_censor] {src_w}x{src_h} — mendeteksi & mensensor wajah tiap frame...")
     emit_progress(0)
 
-    insight_app, insight_device = _load_insightface()
+    padding = 0.15
+    pose_landmarker = None
+    if args.target == "head":
+        pose_landmarker = _load_pose_landmarker()
+        if pose_landmarker is None:
+            emit_status("[face_censor] PoseLandmarker tidak tersedia, fallback ke deteksi wajah (padding diperbesar).")
+            padding = 0.6
+        else:
+            emit_status("[face_censor] Detector: MediaPipe PoseLandmarker (target: kepala)")
+
+    insight_app, insight_device = None, None
     mp_detector = None
     yunet = None
-    if insight_app is not None:
-        emit_status(f"[face_censor] Detector: InsightFace SCRFD — {insight_device}")
-    else:
-        mp_detector = _load_mediapipe()
-        if mp_detector is not None:
-            emit_status("[face_censor] Detector: MediaPipe — CPU")
+    if pose_landmarker is None:
+        # target="face", ATAU target="head" tapi pose landmarker gagal load —
+        # baru load chain detektor wajah. Kalau pose landmarker berhasil, chain
+        # ini tidak pernah dipakai, jadi tidak perlu di-load sama sekali (hemat
+        # beberapa detik startup + hindari status log yang membingungkan).
+        insight_app, insight_device = _load_insightface()
+        if insight_app is not None:
+            emit_status(f"[face_censor] Detector: InsightFace SCRFD — {insight_device}")
         else:
-            yunet = _load_yunet(src_w, src_h)
-            if yunet is not None:
-                emit_status("[face_censor] Detector: YuNet — CPU")
+            mp_detector = _load_mediapipe()
+            if mp_detector is not None:
+                emit_status("[face_censor] Detector: MediaPipe — CPU")
             else:
-                emit_status("[face_censor] Detector: Haar cascade — CPU (fallback)")
+                yunet = _load_yunet(src_w, src_h)
+                if yunet is not None:
+                    emit_status("[face_censor] Detector: YuNet — CPU")
+                else:
+                    emit_status("[face_censor] Detector: Haar cascade — CPU (fallback)")
 
     overlay_img = None
     if args.censor_image:
@@ -179,7 +198,9 @@ def main():
         if not ret:
             break
 
-        if insight_app is not None:
+        if pose_landmarker is not None:
+            faces = _detect_pose_heads(frame, pose_landmarker)
+        elif insight_app is not None:
             faces = _detect_insightface(frame, insight_app)
         elif mp_detector is not None:
             faces = _detect_mediapipe(frame, mp_detector)
@@ -191,9 +212,9 @@ def main():
 
         for f in faces:
             if overlay_img is not None:
-                overlay_image_region(frame, f["bbox"], overlay_img, padding=0.15)
+                overlay_image_region(frame, f["bbox"], overlay_img, padding=padding)
             else:
-                pixelate_region(frame, f["bbox"], padding=0.15)
+                pixelate_region(frame, f["bbox"], padding=padding)
 
         try:
             proc.stdin.write(frame.tobytes())

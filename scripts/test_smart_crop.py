@@ -2,9 +2,15 @@
 """Self-check for pick_speaker_cx continuity bias (assert-based, no framework)."""
 import sys
 import os
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(__file__))
-from smart_crop import pick_speaker_cx, _select_insightface_providers  # noqa: E402
+from smart_crop import (  # noqa: E402
+    pick_speaker_cx,
+    _select_insightface_providers,
+    _head_bbox_from_landmarks,
+    _detect_pose_heads,
+)
 
 
 def face(cx):
@@ -65,6 +71,104 @@ def test_select_insightface_providers_falls_back_to_cpu():
     assert providers is None
 
 
+def _landmarks(overrides: dict) -> list:
+    """33 landmark palsu, default invisible; override index tertentu dengan (x, y, visibility)."""
+    base = [SimpleNamespace(x=0.5, y=0.5, visibility=0.0) for _ in range(33)]
+    for idx, (x, y, vis) in overrides.items():
+        base[idx] = SimpleNamespace(x=x, y=y, visibility=vis)
+    return base
+
+
+def test_head_bbox_from_frontal_landmarks():
+    lm = _landmarks({
+        0:  (0.50, 0.20, 1.0),  # nose
+        2:  (0.47, 0.19, 1.0),  # left_eye
+        5:  (0.53, 0.19, 1.0),  # right_eye
+        7:  (0.45, 0.20, 1.0),  # left_ear
+        8:  (0.55, 0.20, 1.0),  # right_ear
+        11: (0.40, 0.40, 1.0),  # left_shoulder
+        12: (0.60, 0.40, 1.0),  # right_shoulder
+    })
+    result = _head_bbox_from_landmarks(lm, 1000, 1000)
+    assert result is not None
+    bx, by, bw, bh = result["bbox"]
+    assert bw > 0 and bh > 0
+    assert by + bh <= 500  # bbox kepala berhenti jauh di atas garis bahu (y=400)
+
+
+def test_head_bbox_from_shoulders_only():
+    # Simulasi orang membelakangi kamera: cuma bahu yang visible.
+    lm = _landmarks({
+        11: (0.40, 0.40, 1.0),
+        12: (0.60, 0.40, 1.0),
+    })
+    result = _head_bbox_from_landmarks(lm, 1000, 1000)
+    assert result is not None
+    bx, by, bw, bh = result["bbox"]
+    center_x = bx + bw / 2
+    assert 300 < center_x < 700  # dipusatkan di antara 2 bahu
+    assert by < 400  # bbox mulai di atas garis bahu
+
+
+def test_head_bbox_returns_none_when_nothing_visible():
+    lm = _landmarks({})
+    assert _head_bbox_from_landmarks(lm, 1000, 1000) is None
+
+
+def test_head_bbox_shoulders_only_zero_width():
+    # Simulasi profil tegak lurus ke kamera: kedua bahu proyeksinya di x
+    # yang sama persis -> shoulder_w = 0. Tanpa fallback, bbox jadi ~40px
+    # (nyaris tidak menutupi kepala). Harus tetap dapat bbox yang wajar.
+    lm = _landmarks({
+        11: (0.50, 0.40, 1.0),
+        12: (0.50, 0.40, 1.0),
+    })
+    result = _head_bbox_from_landmarks(lm, 1000, 1000)
+    assert result is not None
+    bx, by, bw, bh = result["bbox"]
+    assert bw > 60  # jauh lebih besar dari fallback minimum lama (~40px)
+    assert bh > 60
+
+
+def test_detect_pose_heads_multi_person():
+    # `_detect_pose_heads` melakukan `import mediapipe as mp` secara
+    # unconditional (bukan try/except) buat konstruksi mp.Image, walaupun
+    # FakeLandmarker di bawah ini tidak pernah benar-benar memakai objek
+    # mp.Image tsb. Kalau package `mediapipe` tidak ter-install di
+    # environment python3 yang menjalankan file test ini, skip test ini
+    # dengan pesan yang jelas alih-alih meng-crash seluruh suite.
+    try:
+        import mediapipe  # noqa: F401
+    except ImportError:
+        print("SKIP: test_detect_pose_heads_multi_person (mediapipe tidak "
+              "ter-install di python3 environment ini)")
+        return
+
+    import numpy as np
+
+    lm1 = _landmarks({
+        0: (0.20, 0.20, 1.0), 2: (0.18, 0.19, 1.0), 5: (0.22, 0.19, 1.0),
+        7: (0.17, 0.20, 1.0), 8: (0.23, 0.20, 1.0),
+        11: (0.15, 0.40, 1.0), 12: (0.25, 0.40, 1.0),
+    })
+    lm2 = _landmarks({
+        0: (0.70, 0.20, 1.0), 2: (0.68, 0.19, 1.0), 5: (0.72, 0.19, 1.0),
+        7: (0.67, 0.20, 1.0), 8: (0.73, 0.20, 1.0),
+        11: (0.65, 0.40, 1.0), 12: (0.75, 0.40, 1.0),
+    })
+
+    class FakeResult:
+        pose_landmarks = [lm1, lm2]
+
+    class FakeLandmarker:
+        def detect(self, mp_image):
+            return FakeResult()
+
+    frame = np.zeros((1000, 1000, 3), dtype=np.uint8)
+    heads = _detect_pose_heads(frame, FakeLandmarker())
+    assert len(heads) == 2
+
+
 if __name__ == "__main__":
     test_ambiguous_prefers_locked_face()
     test_no_lock_yet_falls_back_to_sharpest()
@@ -73,4 +177,9 @@ if __name__ == "__main__":
     test_select_insightface_providers_prefers_cuda()
     test_select_insightface_providers_falls_back_to_coreml()
     test_select_insightface_providers_falls_back_to_cpu()
-    print("OK: pick_speaker_cx continuity self-check passed")
+    test_head_bbox_from_frontal_landmarks()
+    test_head_bbox_from_shoulders_only()
+    test_head_bbox_returns_none_when_nothing_visible()
+    test_head_bbox_shoulders_only_zero_width()
+    test_detect_pose_heads_multi_person()
+    print("OK: pick_speaker_cx + head-bbox self-check passed")

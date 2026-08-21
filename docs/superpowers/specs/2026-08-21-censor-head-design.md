@@ -162,7 +162,7 @@ while True:
             pixelate_region(frame, f["bbox"], padding=padding)
 ```
 
-Detector face-chain (`insight_app`/`mp_detector`/`yunet`/cascade) tetap di-load lebih dulu seperti sekarang, dipakai baik sebagai default (`target=face`) maupun sebagai fallback (`target=head` tapi pose gagal load) — tidak ada load ganda yang sia-sia.
+Pose landmarker (kalau `target=head`) di-load LEBIH DULU. Detector face-chain (`insight_app`/`mp_detector`/`yunet`/cascade) cuma di-load kalau `pose_landmarker` hasilnya `None` — yaitu `target=face` (default), ATAU `target=head` tapi pose landmarker gagal load/download. Kalau `target=head` dan pose landmarker berhasil load, face-chain SAMA SEKALI TIDAK di-load — tidak ada load ganda yang sia-sia, dan tidak ada status log detektor wajah yang membingungkan sebelum status PoseLandmarker muncul.
 
 ### 3. `scripts/test_face_censor.py`
 
