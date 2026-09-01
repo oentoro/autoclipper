@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useLang } from "../i18n";
 import type { SrtSegment } from "../types";
@@ -45,6 +45,7 @@ export default function SubtitleTimeline({ videoPath, segments, onSegmentTimeCha
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [livePreview, setLivePreview] = useState<LivePreview | null>(null);
+  const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -58,7 +59,7 @@ export default function SubtitleTimeline({ videoPath, segments, onSegmentTimeCha
   function handleRulerClick(e: React.MouseEvent<HTMLDivElement>) {
     const rect = e.currentTarget.getBoundingClientRect();
     const clickSec = (e.clientX - rect.left) / pxPerSec;
-    if (videoRef.current) videoRef.current.currentTime = clamp(clickSec, 0, duration);
+    if (videoRef.current) videoRef.current.currentTime = clamp(clickSec, 0, safeDuration);
   }
 
   function handleSegmentClick(seg: SrtSegment) {
@@ -84,9 +85,9 @@ export default function SubtitleTimeline({ videoPath, segments, onSegmentTimeCha
     const deltaSec = (e.clientX - dragState.startX) / pxPerSec;
     const { index, mode, origStart, origEnd } = dragState;
     const result =
-      mode === "move" ? computeMoveDrag(origStart, origEnd, deltaSec, duration) :
+      mode === "move" ? computeMoveDrag(origStart, origEnd, deltaSec, safeDuration) :
       mode === "trim-start" ? computeTrimStartDrag(origStart, origEnd, deltaSec) :
-      computeTrimEndDrag(origStart, origEnd, deltaSec, duration);
+      computeTrimEndDrag(origStart, origEnd, deltaSec, safeDuration);
     setLivePreview({ index, start: result.start, end: result.end });
   }
 
@@ -98,9 +99,12 @@ export default function SubtitleTimeline({ videoPath, segments, onSegmentTimeCha
     setLivePreview(null);
   }
 
-  const tickInterval = pxPerSec >= 20 ? 1 : 5;
-  const ticks: number[] = [];
-  for (let s = 0; s <= duration; s += tickInterval) ticks.push(s);
+  const tickInterval = Math.max(1, Math.ceil(70 / pxPerSec));
+  const ticks = useMemo(() => {
+    const result: number[] = [];
+    for (let s = 0; s <= safeDuration; s += tickInterval) result.push(s);
+    return result;
+  }, [safeDuration, tickInterval]);
 
   return (
     <div className="subtitle-timeline">
@@ -132,7 +136,7 @@ export default function SubtitleTimeline({ videoPath, segments, onSegmentTimeCha
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
       >
-        <div className="timeline-content" style={{ width: duration * pxPerSec }}>
+        <div className="timeline-content" style={{ width: safeDuration * pxPerSec }}>
           <div className="timeline-ruler" onClick={handleRulerClick}>
             {ticks.map(sec => (
               <div key={sec} className="timeline-ruler-tick" style={{ left: sec * pxPerSec }}>

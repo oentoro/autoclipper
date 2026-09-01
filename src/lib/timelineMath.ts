@@ -10,6 +10,7 @@ export function computeMoveDrag(
   deltaSec: number,
   duration: number
 ): { start: number; end: number } {
+  if (!(duration > 0) || !Number.isFinite(duration)) return { start: origStart, end: origEnd };
   const shift = clamp(deltaSec, -origStart, duration - origEnd);
   return { start: origStart + shift, end: origEnd + shift };
 }
@@ -30,6 +31,7 @@ export function computeTrimEndDrag(
   deltaSec: number,
   duration: number
 ): { start: number; end: number } {
+  if (!(duration > 0) || !Number.isFinite(duration)) return { start: origStart, end: origEnd };
   const lower = Math.min(duration, origStart + MIN_SEGMENT_DURATION);
   const end = clamp(origEnd + deltaSec, lower, duration);
   return { start: origStart, end };

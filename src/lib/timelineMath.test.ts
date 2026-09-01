@@ -29,6 +29,12 @@ describe("computeMoveDrag", () => {
   it("clamps shift so end does not exceed duration", () => {
     expect(computeMoveDrag(95, 98, 10, 100)).toEqual({ start: 97, end: 100 });
   });
+  it("is a no-op when duration is 0 (video metadata not loaded yet)", () => {
+    expect(computeMoveDrag(10, 12, 3, 0)).toEqual({ start: 10, end: 12 });
+  });
+  it("is a no-op when duration is not finite", () => {
+    expect(computeMoveDrag(10, 12, 3, Infinity)).toEqual({ start: 10, end: 12 });
+  });
 });
 
 describe("computeTrimStartDrag", () => {
@@ -64,5 +70,11 @@ describe("computeTrimEndDrag", () => {
   it("never exceeds duration even for a degenerate near-duration start", () => {
     const result = computeTrimEndDrag(99.98, 100, 5, 100);
     expect(result.end).toBe(100);
+  });
+  it("is a no-op when duration is 0 (video metadata not loaded yet)", () => {
+    expect(computeTrimEndDrag(10, 12, 3, 0)).toEqual({ start: 10, end: 12 });
+  });
+  it("is a no-op when duration is not finite", () => {
+    expect(computeTrimEndDrag(10, 12, 3, Infinity)).toEqual({ start: 10, end: 12 });
   });
 });

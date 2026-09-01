@@ -21,4 +21,8 @@ describe("secondsToSrtTime", () => {
   it("zero-pads millis to 3 digits", () => {
     expect(secondsToSrtTime(1.005)).toBe("00:00:01,005");
   });
+
+  it("caps milliseconds at 999 instead of rolling to 1000", () => {
+    expect(secondsToSrtTime(0.9995)).toBe("00:00:00,999");
+  });
 });
