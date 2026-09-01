@@ -45,7 +45,7 @@ EXTRA_CONFIG=$(cat <<JSONEOF
 JSONEOF
 )
 
-npm run tauri build -- --config "$EXTRA_CONFIG"
+npm run tauri build -- --config "$EXTRA_CONFIG" "$@"
 
 echo ""
 echo "✅ Release build complete!"

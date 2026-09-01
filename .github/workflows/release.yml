@@ -19,7 +19,7 @@ jobs:
             build_script: bash scripts/build_release.sh
             asset_glob: src-tauri/target/release/bundle/dmg/*.dmg
           - os: ubuntu-latest
-            build_script: bash scripts/build_release.sh
+            build_script: bash scripts/build_release.sh -vv
             asset_glob: |
               src-tauri/target/release/bundle/deb/*.deb
               src-tauri/target/release/bundle/appimage/*.AppImage
