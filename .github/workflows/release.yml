@@ -22,7 +22,6 @@ jobs:
             build_script: bash scripts/build_release.sh
             asset_glob: |
               src-tauri/target/release/bundle/deb/*.deb
-              src-tauri/target/release/bundle/rpm/*.rpm
               src-tauri/target/release/bundle/appimage/*.AppImage
           - os: windows-latest
             build_script: pwsh scripts/build_release.ps1
@@ -51,7 +50,6 @@ jobs:
             libssl-dev \
             libgtk-3-dev \
             libayatana-appindicator3-dev \
-            rpm \
             xz-utils \
             unzip
 
