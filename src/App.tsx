@@ -7,9 +7,8 @@ import TranscriptView from "./components/TranscriptView";
 import ClipResults from "./components/ClipResults";
 import DepsCheck from "./components/DepsCheck";
 import ModelManager from "./components/ModelManager";
-import LicenseGate from "./components/LicenseGate";
 import { useLang } from "./i18n";
-import type { SrtSegment, TranscribeResult, TranslateResult, AnalyzeResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle, LicenseInfo, YtDownloadProgress, ManualClip } from "./types";
+import type { SrtSegment, TranscribeResult, TranslateResult, AnalyzeResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle, YtDownloadProgress, ManualClip } from "./types";
 import { DEFAULT_SUBTITLE_STYLE } from "./types";
 import { secondsToSrtTime } from "./lib/time";
 
@@ -40,23 +39,12 @@ const TRANSLATE_LANGS = [
   { code: "ar", label: "العربية" },
 ];
 
-const DEV_MODE = false;
-
 export default function App() {
-  const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(
-    DEV_MODE ? { key: "DEV-MODE", instance_id: "", product_name: "AutoClipper", customer_name: "", customer_email: "", platform: "lemonsqueezy" } : null
-  );
-
-  if (!licenseInfo) {
-    return <LicenseGate onLicensed={setLicenseInfo} />;
-  }
-
-  return <AppContent licenseInfo={licenseInfo} />;
+  return <AppContent />;
 }
 
-function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
+function AppContent() {
   const { lang, setLang, t } = useLang();
-  const [showLicenseInfo, setShowLicenseInfo] = useState(false);
   const [depsStatus, setDepsStatus] = useState<DepsStatus | null>(null);
   const [depsChecking, setDepsChecking] = useState(true);
   const [showDeps, setShowDeps] = useState(false);
@@ -598,11 +586,6 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
           <button className="btn btn-ghost btn-sm" onClick={() => setShowDeps(true)}>
             {t("btnDeps")}
           </button>
-          {licenseInfo && licenseInfo.key !== "DEV-MODE" && (
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowLicenseInfo(true)}>
-              {t("btnLicense")}
-            </button>
-          )}
           {(step !== "upload") && (
             <button className="btn btn-ghost" onClick={handleReset}>
               {t("btnRestart")}
@@ -869,53 +852,6 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
           onClose={() => setShowModelManager(false)}
           onRefresh={refreshModels}
         />
-      )}
-
-      {showLicenseInfo && licenseInfo && (
-        <div className="modal-overlay" onClick={() => setShowLicenseInfo(false)}>
-          <div className="modal-box license-info-modal" onClick={(e) => e.stopPropagation()}>
-            <h3 className="modal-title">{t("licenseTitle")}</h3>
-            <div className="license-info-rows">
-              <div className="license-info-row">
-                <span className="license-info-label">{t("licenseProduct")}</span>
-                <span className="license-info-value">{licenseInfo.product_name}</span>
-              </div>
-              {licenseInfo.customer_name && (
-                <div className="license-info-row">
-                  <span className="license-info-label">{t("licenseName")}</span>
-                  <span className="license-info-value">{licenseInfo.customer_name}</span>
-                </div>
-              )}
-              {licenseInfo.customer_email && (
-                <div className="license-info-row">
-                  <span className="license-info-label">{t("licenseEmail")}</span>
-                  <span className="license-info-value">{licenseInfo.customer_email}</span>
-                </div>
-              )}
-              <div className="license-info-row">
-                <span className="license-info-label">{t("licenseKey")}</span>
-                <span className="license-info-value license-key-display">{licenseInfo.key}</span>
-              </div>
-            </div>
-            <div className="license-info-actions">
-              <button className="btn btn-ghost" onClick={() => setShowLicenseInfo(false)}>{t("btnClose")}</button>
-              <button
-                className="btn btn-danger"
-                onClick={async () => {
-                  if (!confirm(t("licenseDeactivateConfirm"))) return;
-                  try {
-                    await invoke("deactivate_license");
-                    window.location.reload();
-                  } catch (e) {
-                    alert(String(e));
-                  }
-                }}
-              >
-                {t("btnDeactivate")}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );

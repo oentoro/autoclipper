@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "AutoClipper - Aplikasi clipping video otomatis"
 authors = []
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "autoclipper_lib"

@@ -111,15 +111,6 @@ export interface ManualClip {
   label: string;
 }
 
-export interface LicenseInfo {
-  key: string;
-  instance_id: string;
-  product_name: string;
-  customer_name: string;
-  customer_email: string;
-  platform: string; // "lemonsqueezy" | "gumroad"
-}
-
 export interface DepCheck {
   name: string;
   ok: boolean;
