@@ -11,6 +11,7 @@ import LicenseGate from "./components/LicenseGate";
 import { useLang } from "./i18n";
 import type { SrtSegment, TranscribeResult, TranslateResult, AnalyzeResult, ClassifyResult, Section, ClipResult, AppStep, DepsStatus, FontInfo, LlmModel, DownloadProgress, SubtitleStyle, LicenseInfo, YtDownloadProgress, ManualClip } from "./types";
 import { DEFAULT_SUBTITLE_STYLE } from "./types";
+import { secondsToSrtTime } from "./lib/time";
 
 const WHISPER_LANGS = [
   { code: "",   label: "Auto-detect" },
@@ -524,6 +525,18 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
     );
   }
 
+  function handleSegmentTimeChange(index: number, newStart: number, newEnd: number) {
+    const updated = segments.map(s =>
+      s.index === index
+        ? { ...s, start: newStart, end: newEnd, start_time: secondsToSrtTime(newStart), end_time: secondsToSrtTime(newEnd) }
+        : s
+    );
+    setSegments(updated);
+    setSrtContent(
+      updated.map(s => `${s.index}\n${s.start_time} --> ${s.end_time}\n${s.text}\n`).join("\n")
+    );
+  }
+
   function handleReset() {
     if (segments.length > 0 && !confirm(t("resetConfirm"))) return;
     setStep("upload");
@@ -769,6 +782,7 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
             onClip={handleClip}
             onSaveSrt={handleSaveSrt}
             onSegmentEdit={handleSegmentEdit}
+            onSegmentTimeChange={handleSegmentTimeChange}
             onBurnSubtitlesChange={setBurnSubtitles}
             subtitleMode={subtitleMode}
             onSubtitleModeChange={setSubtitleMode}
