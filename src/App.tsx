@@ -738,9 +738,9 @@ function AppContent({ licenseInfo }: { licenseInfo: LicenseInfo }) {
                   <div className="preset-group">
                     {([
                       { value: 0, labelKey: "wordsAuto", hintKey: "wordsAutoHint" },
+                      { value: 1, labelKey: "words1",    hintKey: "words1Hint"    },
                       { value: 2, labelKey: "words2",    hintKey: "words2Hint"    },
                       { value: 3, labelKey: "words3",    hintKey: "words3Hint"    },
-                      { value: 5, labelKey: "words5",    hintKey: "words5Hint"    },
                     ] as const).map(p => (
                       <button
                         key={p.value}
