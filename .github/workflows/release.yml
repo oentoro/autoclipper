@@ -71,6 +71,10 @@ jobs:
         run: ${{ matrix.build_script }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy (used to build the AppImage) needs FUSE to mount
+          # itself; GitHub-hosted runners don't have /dev/fuse. This makes
+          # it extract-and-run instead, which needs no FUSE at all.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
