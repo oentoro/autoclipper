@@ -34,17 +34,31 @@ def main():
     machine = platform.machine().lower()
 
     print("Mengambil informasi rilis llama.cpp terbaru...")
-    req = urllib.request.Request(
-        "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest",
-        headers={"User-Agent": "autoclipper-setup"}
-    )
-    with urllib.request.urlopen(req) as r:
-        data = json.loads(r.read())
+    headers = {"User-Agent": "autoclipper-setup"}
+    gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if gh_token:
+        headers["Authorization"] = f"Bearer {gh_token}"
+
+    def api_get(path):
+        req = urllib.request.Request(f"https://api.github.com/repos/ggml-org/llama.cpp{path}", headers=headers)
+        with urllib.request.urlopen(req) as r:
+            return json.loads(r.read())
+
+    data = api_get("/releases/latest")
+    all_assets = {a["name"]: a["browser_download_url"] for a in data.get("assets", [])}
+
+    # llama.cpp's "latest" release is a lightweight marker: its only asset is
+    # nightly-tag.txt, whose content is the tag of the release that actually
+    # carries the platform binaries.
+    if list(all_assets.keys()) == ["nightly-tag.txt"]:
+        nightly_req = urllib.request.Request(all_assets["nightly-tag.txt"], headers=headers)
+        with urllib.request.urlopen(nightly_req) as r:
+            nightly_tag = r.read().decode().strip()
+        data = api_get(f"/releases/tags/{nightly_tag}")
+        all_assets = {a["name"]: a["browser_download_url"] for a in data.get("assets", [])}
 
     tag = data["tag_name"]
     print(f"Versi terbaru: {tag}")
-
-    all_assets = {a["name"]: a["browser_download_url"] for a in data.get("assets", [])}
 
     # Build candidate asset names in priority order
     if system == "darwin":
@@ -81,7 +95,7 @@ def main():
         print("Asset yang tersedia:")
         for name in sorted(all_assets):
             print(f"  {name}")
-        print("\nDownload manual: https://github.com/ggerganov/llama.cpp/releases")
+        print("\nDownload manual: https://github.com/ggml-org/llama.cpp/releases")
         sys.exit(1)
 
     # Download
