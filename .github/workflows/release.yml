@@ -52,6 +52,11 @@ jobs:
             libayatana-appindicator3-dev \
             xz-utils \
             unzip
+          # linuxdeploy's AppImage runtime is linked against libfuse.so.2,
+          # which recent Ubuntu images no longer ship by default. Package
+          # name varies by release (plain vs. time64-suffixed) — try both,
+          # non-fatal either way since APPIMAGE_EXTRACT_AND_RUN is also set.
+          sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64 || true
 
       - uses: actions/setup-node@v4
         with:
