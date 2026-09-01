@@ -779,6 +779,113 @@ body {
 }
 .search-input:focus { border-color: var(--accent); }
 
+.subtitle-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.subtitle-timeline-video {
+  width: 100%;
+  max-height: 280px;
+  border-radius: 8px;
+  background: #000;
+}
+.timeline-zoom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.timeline-zoom-label {
+  font-size: 12px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+.timeline-zoom-slider {
+  flex: 1;
+  max-width: 200px;
+}
+.timeline-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+}
+.timeline-content {
+  position: relative;
+  min-width: 100%;
+}
+.timeline-ruler {
+  position: relative;
+  height: 22px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.timeline-ruler-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.timeline-ruler-label {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-size: 10px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+.timeline-track {
+  position: relative;
+  height: 48px;
+}
+.timeline-segment {
+  position: absolute;
+  top: 6px;
+  height: 36px;
+  background: var(--accent);
+  border-radius: 4px;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  user-select: none;
+}
+.timeline-segment:active { cursor: grabbing; }
+.timeline-segment-text {
+  font-size: 11px;
+  color: #fff;
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.timeline-handle-left, .timeline-handle-right {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: rgba(255, 255, 255, 0.35);
+  cursor: ew-resize;
+}
+.timeline-handle-left { left: 0; }
+.timeline-handle-right { right: 0; }
+.timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent2);
+  pointer-events: none;
+}
+
 .segments-list {
   flex: 1;
   min-height: 0;
