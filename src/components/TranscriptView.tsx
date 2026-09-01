@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useLang } from "../i18n";
+import SubtitleTimeline from "./SubtitleTimeline";
 import type { SrtSegment, Section, FontInfo, LlmModel, SubtitleStyle, ManualClip } from "../types";
 
 function hexToRgb(hex: string): string {
@@ -36,6 +37,7 @@ interface Props {
   onClip: () => void;
   onSaveSrt: () => void;
   onSegmentEdit: (index: number, newText: string) => void;
+  onSegmentTimeChange: (index: number, newStart: number, newEnd: number) => void;
   onBurnSubtitlesChange: (v: boolean) => void;
   subtitleMode: "translated_only" | "bilingual" | "original_only";
   onSubtitleModeChange: (v: "translated_only" | "bilingual" | "original_only") => void;
@@ -139,6 +141,7 @@ export default function TranscriptView({
   onClip,
   onSaveSrt,
   onSegmentEdit,
+  onSegmentTimeChange,
   onBurnSubtitlesChange,
   subtitleMode,
   onSubtitleModeChange,
@@ -911,6 +914,12 @@ export default function TranscriptView({
 
       {/* ── Main area ── */}
       <div className="transcript-main">
+        <SubtitleTimeline
+          videoPath={videoPath}
+          segments={segments}
+          onSegmentTimeChange={onSegmentTimeChange}
+        />
+
         <div className="transcript-toolbar">
           <input
             className="search-input"
