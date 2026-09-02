@@ -37,15 +37,17 @@ EXTRA_CONFIG=$(cat <<JSONEOF
 {
   "bundle": {
     $TARGETS_JSON
-    "resources": [
-      "../scripts/transcribe.py",
-      "../scripts/burn_subtitles.py",
-      "../scripts/smart_crop.py",
-      "../scripts/download_llama_server.py",
-      "vendor/python/**/*",
-      "vendor/bin/*",
-      "vendor/models/**/*"
-    ]
+    "resources": {
+      "../scripts/transcribe.py": "scripts/transcribe.py",
+      "../scripts/burn_subtitles.py": "scripts/burn_subtitles.py",
+      "../scripts/smart_crop.py": "scripts/smart_crop.py",
+      "../scripts/face_censor.py": "scripts/face_censor.py",
+      "../scripts/download_whisper_model.py": "scripts/download_whisper_model.py",
+      "../scripts/download_llama_server.py": "scripts/download_llama_server.py",
+      "vendor/python/**/*": "vendor/python/",
+      "vendor/bin/*": "vendor/bin/",
+      "vendor/models/**/*": "vendor/models/"
+    }
   }
 }
 JSONEOF
