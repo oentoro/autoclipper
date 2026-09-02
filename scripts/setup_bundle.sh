@@ -44,7 +44,7 @@ if [ ! -f "$VENDOR/python/bin/python3" ]; then
 
   PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_RELEASE}/cpython-${PYTHON_VERSION}+${PYTHON_RELEASE}-${PYTHON_TRIPLE}-install_only.tar.gz"
   echo "  Downloading from: $PYTHON_URL"
-  curl -L --progress-bar "$PYTHON_URL" | tar -xz -C "$VENDOR"
+  curl -L --retry 3 --retry-delay 2 --progress-bar "$PYTHON_URL" | tar -xz -C "$VENDOR"
   echo "  ✓ Python $PYTHON_VERSION installed"
 else
   echo "[1/4] Python already bundled — skip"
@@ -100,8 +100,8 @@ else
 
   if [ "$OS" = "Darwin" ]; then
     # evermeet.cx — static macOS builds (no Homebrew dylib deps)
-    if curl -fsSL "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" -o "$TMP/ffmpeg.zip" && \
-       curl -fsSL "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" -o "$TMP/ffprobe.zip"; then
+    if curl -fsSL --retry 3 --retry-delay 2 "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" -o "$TMP/ffmpeg.zip" && \
+       curl -fsSL --retry 3 --retry-delay 2 "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" -o "$TMP/ffprobe.zip"; then
       unzip -q -o "$TMP/ffmpeg.zip"  -d "$VENDOR/bin/"
       unzip -q -o "$TMP/ffprobe.zip" -d "$VENDOR/bin/"
       chmod +x "$VENDOR/bin/ffmpeg" "$VENDOR/bin/ffprobe"
@@ -117,7 +117,7 @@ else
     esac
     FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/$FFMPEG_FILE"
 
-    if curl -fsSL "$FFMPEG_URL" -o "$TMP/ffmpeg.tar.xz"; then
+    if curl -fsSL --retry 3 --retry-delay 2 "$FFMPEG_URL" -o "$TMP/ffmpeg.tar.xz"; then
       tar -xf "$TMP/ffmpeg.tar.xz" -C "$TMP/"
       # Archive structure: ffmpeg-master-latest-linux64-gpl/bin/ffmpeg
       find "$TMP" -maxdepth 3 -name "ffmpeg"  -type f -exec cp {} "$VENDOR/bin/" \;
