@@ -23,9 +23,7 @@ jobs:
             asset_glob: src-tauri/target/release/bundle/deb/*.deb
           - os: windows-latest
             build_script: pwsh scripts/build_release.ps1
-            asset_glob: |
-              src-tauri/target/release/bundle/msi/*.msi
-              src-tauri/target/release/bundle/nsis/*.exe
+            asset_glob: src-tauri/target/release/bundle/msi/*.msi
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60

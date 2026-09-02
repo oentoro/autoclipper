@@ -10,8 +10,15 @@ Write-Host "==> Setting up bundled dependencies..."
 Write-Host ""
 Write-Host "==> Building Tauri app with bundled deps..."
 
+# Only "msi" is built, out of tauri.conf.json's default "all": NSIS uses
+# solid LZMA compression over the whole resource tree, which is dramatically
+# slower than WiX/MSI for a payload this size (bundled Python + opencv +
+# onnxruntime + mediapipe + models) -- over 50 minutes with no output before
+# timing out in CI, while MSI packages the same resources in well under a
+# minute. MSI already covers the "just double-click to install" use case.
 $ExtraConfig = @{
     bundle = @{
+        targets = @("msi")
         resources = @{
             "../scripts/transcribe.py" = "scripts/transcribe.py"
             "../scripts/burn_subtitles.py" = "scripts/burn_subtitles.py"
