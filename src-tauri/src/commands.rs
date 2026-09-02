@@ -2494,20 +2494,34 @@ pub async fn download_youtube(
         }))
     } else { None };
 
-    // Drain stderr (warnings only) so the pipe doesn't block
-    if let Some(stderr) = child.stderr.take() {
-        tokio::spawn(async move {
+    // Keep the last few stderr lines (usually the ERROR: ... line) so a
+    // failure can say *why* instead of just "invalid URL" for every cause.
+    let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let stderr_task = if let Some(stderr) = child.stderr.take() {
+        let tail = stderr_tail.clone();
+        Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(_)) = reader.next_line().await {}
-        });
-    }
+            while let Ok(Some(line)) = reader.next_line().await {
+                let mut t = tail.lock().unwrap();
+                t.push(line);
+                if t.len() > 20 { t.remove(0); }
+            }
+        }))
+    } else { None };
 
     let status = child.wait().await
         .map_err(|e| format!("yt-dlp error: {e}"))?;
     *cancel.pid.lock().unwrap() = None;
 
     if !status.success() {
-        return Err("Download dibatalkan atau URL tidak valid. Pastikan URL YouTube benar dan yt-dlp versi terbaru.".to_string());
+        if let Some(task) = stderr_task { let _ = task.await; }
+        let detail = stderr_tail.lock().unwrap().join("\n");
+        let detail = detail.trim();
+        return Err(if detail.is_empty() {
+            "Download dibatalkan atau URL tidak valid. Pastikan URL YouTube benar dan yt-dlp versi terbaru.".to_string()
+        } else {
+            format!("Download gagal:\n{detail}\n\nCoba perbarui yt-dlp: pip install -U yt-dlp")
+        });
     }
 
     // Drain stdout task (still needed for progress events; we no longer parse filepath from it)
