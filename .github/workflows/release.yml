@@ -19,10 +19,8 @@ jobs:
             build_script: bash scripts/build_release.sh
             asset_glob: src-tauri/target/release/bundle/dmg/*.dmg
           - os: ubuntu-latest
-            build_script: bash scripts/build_release.sh -vv
-            asset_glob: |
-              src-tauri/target/release/bundle/deb/*.deb
-              src-tauri/target/release/bundle/appimage/*.AppImage
+            build_script: bash scripts/build_release.sh
+            asset_glob: src-tauri/target/release/bundle/deb/*.deb
           - os: windows-latest
             build_script: pwsh scripts/build_release.ps1
             asset_glob: |
@@ -52,11 +50,6 @@ jobs:
             libayatana-appindicator3-dev \
             xz-utils \
             unzip
-          # linuxdeploy's AppImage runtime is linked against libfuse.so.2,
-          # which recent Ubuntu images no longer ship by default. Package
-          # name varies by release (plain vs. time64-suffixed) — try both,
-          # non-fatal either way since APPIMAGE_EXTRACT_AND_RUN is also set.
-          sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64 || true
 
       - uses: actions/setup-node@v4
         with:
@@ -76,10 +69,6 @@ jobs:
         run: ${{ matrix.build_script }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # linuxdeploy (used to build the AppImage) needs FUSE to mount
-          # itself; GitHub-hosted runners don't have /dev/fuse. This makes
-          # it extract-and-run instead, which needs no FUSE at all.
-          APPIMAGE_EXTRACT_AND_RUN: "1"
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
