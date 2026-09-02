@@ -590,30 +590,45 @@ def pick_speaker_cx(faces: list[dict], gray_curr, gray_prev,
     return best["cx"]
 
 
-# ── Analysis pass ─────────────────────────────────────────────────────────────
+# ── Smoothing params ──────────────────────────────────────────────────────────
 
-def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float,
-                  transition: str = "smooth") -> list[int]:
+def _smoothing_params(fps: float, src_w: int, mode: str) -> tuple:
     """
-    Sample frames to detect face positions.
-    Returns a list of smoothed crop_x values (one per actual video frame).
+    (alpha_slow, alpha_fast, threshold) for the adaptive EMA below.
+
+    smooth     — cinematic pan. Slow constant (1.5 s) for normal movement,
+                 fast constant (0.7 s) kicks in only for large jumps (>25 %).
+    aggressive — hard cut on large jumps (alpha=1, instant), very light
+                 smoothing (0.1 s) for micro-jitter within the same face.
+                 Threshold is 10 % so even medium re-frames snap immediately.
+    """
+    if mode == "aggressive":
+        return (1.0 - np.exp(-1.0 / max(1.0, fps * 0.1)), 1.0, src_w * 0.10)
+    return (1.0 - np.exp(-1.0 / max(1.0, fps * 1.5)),
+            1.0 - np.exp(-1.0 / max(1.0, fps * 0.7)),
+            src_w * 0.25)
+
+
+# ── Detect + track + render — single decode pass ─────────────────────────────
+
+def run_smart_crop(video_path: str, output_path: str, crop_w: int, crop_h: int,
+                   src_w: int, src_h: int, fps: float, ffmpeg: str,
+                   transition: str = "smooth") -> None:
+    """
+    Detect the speaker on sampled frames (~4 fps), track + smooth the crop-x
+    position, and crop+pipe every frame to ffmpeg — all in one decode pass.
+    The EMA smoothing only ever looks at past samples, so tracking and
+    rendering don't need separate passes over the video; the old two-pass
+    version decoded every rendered frame twice (once skipped via grab() at
+    detection time is cheap, but the whole video was then decoded again in
+    full for cropping).
 
     transition="smooth"     — slow cinematic pan; holds lock for ~2.5 s.
     transition="aggressive" — snaps instantly; switches face after ~0.5 s.
     """
-    # Open once to read a test frame for YuNet input-size init
-    cap_tmp = cv2.VideoCapture(video_path)
-    ret, test_frame = cap_tmp.read()
-    total_frames = max(1, int(cap_tmp.get(cv2.CAP_PROP_FRAME_COUNT)))
-    cap_tmp.release()
-    fh_px = test_frame.shape[0] if ret else 720
-    fw_px = test_frame.shape[1] if ret else 1280
-
-    # Detector priority: InsightFace > MediaPipe > YuNet > Haar cascade
     insight_app, insight_device = _load_insightface()
-    mp_detector  = None
-    yunet        = None
-    cuda_yunet   = False
+    mp_detector = None
+    yunet       = None
     if insight_app is not None:
         emit_status(f"[smart_crop] Detector: InsightFace SCRFD — {insight_device} (frontal + profil 0°–90°)")
     else:
@@ -621,7 +636,7 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float,
         if mp_detector is not None:
             emit_status("[smart_crop] Detector: MediaPipe — CPU (deep learning, presisi tinggi)")
         else:
-            yunet = _load_yunet(fw_px, fh_px)
+            yunet = _load_yunet(src_w, src_h)
             if yunet is not None:
                 cuda_yunet = hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0
                 device_label = "CUDA GPU" if cuda_yunet else "CPU"
@@ -635,132 +650,127 @@ def analyze_faces(video_path: str, crop_w: int, src_w: int, fps: float,
     every = max(1, int(fps / 4))   # sample ~4 fps
     sample_fps = fps / every
     if transition == "aggressive":
-        # Switch face after ~0.5 s; respond to smaller positional shifts (15 %)
         min_lock_samples = max(2, int(round(sample_fps * 0.5)))
         switch_dist = src_w * 0.15
     else:
-        # Smooth: hold lock for ~2.5 s; only switch on large positional shift (20 %)
         min_lock_samples = max(8, int(round(sample_fps * 2.5)))
         switch_dist = src_w * 0.20
+    alpha_slow, alpha_fast, ema_threshold = _smoothing_params(fps, src_w, transition)
 
     default_cx = src_w // 2
     last_cx    = default_cx
     prev_gray  = None
-    raw_cx: list[int] = []
+    smoothed   = None  # previous EMA output; None until the first frame
 
     locked_cx: int | None = None   # face center we are currently tracking
     lock_age:  int        = 0      # sampled frames spent on the current lock
 
+    min_cx = crop_w // 2
+    max_cx = src_w - crop_w // 2
+
+    ffmpeg_cmd = [
+        ffmpeg, "-y",
+        "-f", "rawvideo",
+        "-pixel_format", "bgr24",
+        "-video_size", f"{crop_w}x{crop_h}",
+        "-framerate", str(fps),
+        "-i", "pipe:0",
+        "-i", video_path,
+        "-map", "0:v:0",
+        "-map", "1:a:0?",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-shortest",
+        output_path,
+    ]
+    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
     cap = cv2.VideoCapture(video_path)
-    idx = 0
-    progress_interval = max(1, total_frames // 55)  # ~55 updates in 0-55% range
+    total_frames = max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    progress_interval = max(1, total_frames // 95)
     emit_progress(0)
 
-    while True:
-        if idx % every == 0:
+    idx = 0
+    try:
+        while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            if insight_app is not None:
-                faces = _detect_insightface(frame, insight_app)
-            elif mp_detector is not None:
-                faces = _detect_mediapipe(frame, mp_detector)
-            elif yunet is not None:
-                faces = _detect_yunet(frame, yunet)
-            else:
-                faces = _detect_cascade(gray, cascade_front, cascade_profile)
+            if idx % every == 0:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            cx = pick_speaker_cx(faces, gray, prev_gray, locked_cx)
-            if cx is not None:
-                if locked_cx is None:
-                    # First detection — establish lock immediately
-                    locked_cx = cx
-                    lock_age  = 0
-                elif abs(cx - locked_cx) <= switch_dist:
-                    # Same face region (speaker may have shifted slightly)
-                    locked_cx = cx
-                    lock_age += 1
+                if insight_app is not None:
+                    faces = _detect_insightface(frame, insight_app)
+                elif mp_detector is not None:
+                    faces = _detect_mediapipe(frame, mp_detector)
+                elif yunet is not None:
+                    faces = _detect_yunet(frame, yunet)
                 else:
-                    # Different face region detected
-                    if lock_age >= min_lock_samples:
-                        # Lock held long enough — switch to new face
+                    faces = _detect_cascade(gray, cascade_front, cascade_profile)
+
+                cx = pick_speaker_cx(faces, gray, prev_gray, locked_cx)
+                if cx is not None:
+                    if locked_cx is None:
                         locked_cx = cx
                         lock_age  = 0
-                    else:
-                        # Too soon — stay on current face, ignore the switch
+                    elif abs(cx - locked_cx) <= switch_dist:
+                        locked_cx = cx
                         lock_age += 1
-                last_cx = locked_cx
-            else:
-                # No face detected — hold last position AND reset lock_age.
-                # Resetting ensures that when a face reappears (possibly at a
-                # different / center position), it must accumulate min_lock_samples
-                # fresh detections before we switch.  Without this reset the
-                # pre-gap lock_age would satisfy min_lock_samples immediately,
-                # causing the crop to snap to center the instant any face returns.
-                lock_age = 0
+                    else:
+                        if lock_age >= min_lock_samples:
+                            locked_cx = cx
+                            lock_age  = 0
+                        else:
+                            lock_age += 1
+                    last_cx = locked_cx
+                else:
+                    # No face detected — hold last position AND reset lock_age
+                    # so a reappearing face needs min_lock_samples fresh hits
+                    # before we switch, instead of snapping to center at once.
+                    lock_age = 0
 
-            prev_gray = gray
-        else:
-            if not cap.grab():
+                prev_gray = gray
+
+            # Causal EMA: same recurrence as the old two-pass _smooth_adaptive,
+            # just applied one sample at a time instead of over a full array.
+            if smoothed is None:
+                smoothed = float(last_cx)
+            else:
+                alpha = alpha_fast if abs(last_cx - smoothed) > ema_threshold else alpha_slow
+                smoothed = alpha * last_cx + (1.0 - alpha) * smoothed
+
+            x = int(np.clip(smoothed, min_cx, max_cx)) - crop_w // 2
+            cropped = frame[:crop_h, x : x + crop_w]
+            if cropped.shape[0] != crop_h or cropped.shape[1] != crop_w:
+                cropped = cv2.resize(cropped, (crop_w, crop_h))
+            try:
+                proc.stdin.write(cropped.tobytes())
+            except BrokenPipeError:
                 break
 
-        raw_cx.append(last_cx)
-        idx += 1
-        if idx % progress_interval == 0:
-            emit_progress(min(55, int(idx / total_frames * 55)))
-
-    cap.release()
-    if mp_detector is not None:
+            idx += 1
+            if idx % progress_interval == 0:
+                emit_progress(min(99, int(idx / total_frames * 100)))
+    finally:
+        cap.release()
+        if mp_detector is not None:
+            try:
+                mp_detector.close()
+            except Exception:
+                pass
         try:
-            mp_detector.close()
+            proc.stdin.close()
         except Exception:
             pass
 
-    if not raw_cx:
-        return [max(0, default_cx - crop_w // 2)]
+    proc.wait()
+    if proc.returncode != 0:
+        os.write(1, (json.dumps({"error": f"FFmpeg render gagal (exit {proc.returncode})"}) + "\n").encode("utf-8"))
+        sys.exit(1)
 
-    arr = np.array(raw_cx, dtype=float)
-    smoothed = _smooth_adaptive(arr, fps, src_w, mode=transition)
-    min_cx = crop_w // 2
-    max_cx = src_w - crop_w // 2
-    return [int(np.clip(cx, min_cx, max_cx)) - crop_w // 2 for cx in smoothed]
-
-
-# ── EMA smoothing ─────────────────────────────────────────────────────────────
-
-def _smooth_adaptive(arr: np.ndarray, fps: float, src_w: int,
-                     mode: str = "smooth") -> np.ndarray:
-    """
-    EMA with two time constants, selected by mode:
-
-    smooth     — cinematic pan. Slow constant (1.5 s) for normal movement,
-                 fast constant (0.7 s) kicks in only for large jumps (>25 %).
-                 The camera glides between positions.
-
-    aggressive — hard cut on large jumps (alpha=1, instant), very light
-                 smoothing (0.1 s) for micro-jitter within the same face.
-                 Threshold is 10 % so even medium re-frames snap immediately.
-    """
-    if len(arr) == 0:
-        return arr
-    result = np.empty_like(arr, dtype=float)
-    result[0] = arr[0]
-
-    if mode == "aggressive":
-        alpha_slow = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.1))  # 0.1 s — micro-jitter only
-        alpha_fast = 1.0                                          # instant snap
-        threshold  = src_w * 0.10                                 # 10 % triggers snap
-    else:  # smooth
-        alpha_slow = 1.0 - np.exp(-1.0 / max(1.0, fps * 1.5))
-        alpha_fast = 1.0 - np.exp(-1.0 / max(1.0, fps * 0.7))
-        threshold  = src_w * 0.25
-
-    for i in range(1, len(arr)):
-        alpha = alpha_fast if abs(arr[i] - result[i - 1]) > threshold else alpha_slow
-        result[i] = alpha * arr[i] + (1.0 - alpha) * result[i - 1]
-    return result.astype(int)
+    emit_progress(100)
+    emit_status("[smart_crop] Selesai.")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -792,66 +802,10 @@ def main():
     crop_h = src_h & ~1
 
     emit_status(f"[smart_crop] {src_w}x{src_h} → {crop_w}x{crop_h} ({args.ratio})")
-    emit_status("[smart_crop] Mendeteksi posisi pembicara...")
+    emit_status("[smart_crop] Mendeteksi + crop dalam satu pass...")
 
-    crop_x_list = analyze_faces(args.input, crop_w, src_w, fps, transition=args.transition)
-
-    emit_status(f"[smart_crop] Menerapkan crop ke {len(crop_x_list)} frame...")
-    emit_progress(56)
-
-    ffmpeg_cmd = [
-        ffmpeg, "-y",
-        "-f", "rawvideo",
-        "-pixel_format", "bgr24",
-        "-video_size", f"{crop_w}x{crop_h}",
-        "-framerate", str(fps),
-        "-i", "pipe:0",
-        "-i", args.input,
-        "-map", "0:v:0",
-        "-map", "1:a:0?",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
-        "-shortest",
-        args.output,
-    ]
-
-    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
-    cap = cv2.VideoCapture(args.input)
-    frame_idx = 0
-    last_x = crop_x_list[-1] if crop_x_list else 0
-    total_render = len(crop_x_list) or 1
-    render_interval = max(1, total_render // 40)
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        x = crop_x_list[frame_idx] if frame_idx < len(crop_x_list) else last_x
-        cropped = frame[:crop_h, x : x + crop_w]
-        if cropped.shape[0] != crop_h or cropped.shape[1] != crop_w:
-            cropped = cv2.resize(cropped, (crop_w, crop_h))
-        try:
-            proc.stdin.write(cropped.tobytes())
-        except BrokenPipeError:
-            break
-        frame_idx += 1
-        if frame_idx % render_interval == 0:
-            emit_progress(56 + min(43, int(frame_idx / total_render * 43)))
-
-    cap.release()
-    try:
-        proc.stdin.close()
-    except Exception:
-        pass
-
-    proc.wait()
-    if proc.returncode != 0:
-        os.write(1, (json.dumps({"error": f"FFmpeg render gagal (exit {proc.returncode})"}) + "\n").encode("utf-8"))
-        sys.exit(1)
-
-    emit_progress(100)
-    emit_status("[smart_crop] Selesai.")
+    run_smart_crop(args.input, args.output, crop_w, crop_h, src_w, src_h, fps,
+                   ffmpeg, transition=args.transition)
 
 
 if __name__ == "__main__":
