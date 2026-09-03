@@ -1,6 +1,6 @@
 [package]
 name = "autoclipper"
-version = "0.1.2"
+version = "0.1.3"
 description = "AutoClipper - Aplikasi clipping video otomatis"
 authors = []
 edition = "2021"
