@@ -1793,7 +1793,7 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
 
     let ytdlp_path = find_ytdlp();
     let ytdlp_ok = ytdlp_path.is_some();
-    let ytdlp_install = pip_install("yt-dlp");
+    let ytdlp_install = pip_install("\"yt-dlp[default]\"");
     checks.push(DepCheck {
         name: "yt-dlp (YouTube Download)".to_string(),
         ok: ytdlp_ok,
@@ -1803,6 +1803,21 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
         } else { None },
         install_cmd: if !ytdlp_ok { Some(ytdlp_install) } else { None },
         download_url: None,
+        optional: true,
+    });
+
+    let deno_ok = which(if cfg!(windows) { "deno.exe" } else { "deno" }).is_some();
+    checks.push(DepCheck {
+        name: "Deno (JS runtime — YouTube download)".to_string(),
+        ok: deno_ok,
+        path: None,
+        error: if !deno_ok {
+            Some("Deno belum terinstall — tanpa ini, download YouTube sering gagal dengan HTTP 403 karena yt-dlp tidak bisa memecahkan signature video".to_string())
+        } else { None },
+        install_cmd: if !deno_ok {
+            Some(if cfg!(windows) { "winget install DenoLand.Deno".to_string() } else { "curl -fsSL https://deno.land/install.sh | sh".to_string() })
+        } else { None },
+        download_url: if !deno_ok { Some("https://deno.land".to_string()) } else { None },
         optional: true,
     });
 
@@ -2519,8 +2534,14 @@ pub async fn download_youtube(
         let detail = detail.trim();
         return Err(if detail.is_empty() {
             "Download dibatalkan atau URL tidak valid. Pastikan URL YouTube benar dan yt-dlp versi terbaru.".to_string()
+        } else if detail.contains("No supported JavaScript runtime") || detail.contains("HTTP Error 403") {
+            format!(
+                "Download gagal:\n{detail}\n\n\
+                 YouTube sekarang butuh JS runtime (Deno) agar yt-dlp bisa memecahkan signature video. \
+                 Install Deno lalu coba lagi: winget install DenoLand.Deno (Windows) atau https://deno.land"
+            )
         } else {
-            format!("Download gagal:\n{detail}\n\nCoba perbarui yt-dlp: pip install -U yt-dlp")
+            format!("Download gagal:\n{detail}\n\nCoba perbarui yt-dlp: pip install -U \"yt-dlp[default]\"")
         });
     }
 
@@ -2562,7 +2583,7 @@ pub async fn download_youtube(
     }
 
     if filepath.is_empty() || !std::path::Path::new(&filepath).exists() {
-        return Err("File hasil download tidak ditemukan. Coba perbarui yt-dlp: pip install -U yt-dlp".to_string());
+        return Err("File hasil download tidak ditemukan. Coba perbarui yt-dlp: pip install -U \"yt-dlp[default]\"".to_string());
     }
 
     let _ = app.emit("yt-download-progress", YtDownloadProgress {
