@@ -1608,8 +1608,19 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
     });
 
     let python = find_python(v);
-    let python_ok = Command::new(&python).arg("--version").output()
-        .map(|o| o.status.success()).unwrap_or(false);
+    let python_version_output = Command::new(&python).arg("--version").output().ok();
+    let python_ok = python_version_output.as_ref().map(|o| o.status.success()).unwrap_or(false);
+    // `python --version` prints to stdout since 3.4; older builds used stderr.
+    // Only consumed by the Windows-only torch-directml check below.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+    let python_version_str = python_version_output.as_ref().and_then(|o| {
+        let stdout = String::from_utf8_lossy(&o.stdout);
+        let text = if stdout.trim().is_empty() { String::from_utf8_lossy(&o.stderr).into_owned() } else { stdout.into_owned() };
+        text.trim().strip_prefix("Python ").map(|v| v.to_string())
+    });
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+    let python_minor: Option<u32> = python_version_str.as_ref()
+        .and_then(|v| v.split('.').nth(1)).and_then(|m| m.parse().ok());
     checks.push(DepCheck {
         name: format!("Python 3 ({source})"),
         ok: python_ok,
@@ -1689,14 +1700,26 @@ pub async fn check_dependencies(app: tauri::AppHandle) -> DepsStatus {
     #[cfg(target_os = "windows")]
     {
         let dml_ok = pkg_check("torch_directml", "torch-directml");
+        // torch-directml's last release was 2024 and only ships wheels up to
+        // Python 3.12 (https://pypi.org/project/torch-directml/#files) — on
+        // any newer interpreter `pip install` always fails, so don't dangle
+        // an install command that can't succeed.
+        let py_too_new = !dml_ok && python_minor.map(|m| m > 12).unwrap_or(false);
         checks.push(DepCheck {
             name: "torch-directml / GPU AMD·Intel·NVIDIA (Windows)".to_string(),
             ok: dml_ok,
             path: None,
-            error: if !dml_ok {
+            error: if dml_ok {
+                None
+            } else if py_too_new {
+                Some(format!(
+                    "torch-directml belum ada build untuk Python {} (paket ini terakhir dirilis 2024, cuma dukung sampai Python 3.12). Transkrip tetap jalan pakai CPU; install Python 3.12 terpisah kalau butuh akselerasi GPU DirectML.",
+                    python_version_str.as_deref().unwrap_or("versi ini")
+                ))
+            } else {
                 Some("torch-directml belum terinstall — transkrip akan pakai CPU. Install untuk akselerasi GPU AMD/Intel/NVIDIA via DirectML.".to_string())
-            } else { None },
-            install_cmd: if !dml_ok { Some(pip_install("openai-whisper torch-directml")) } else { None },
+            },
+            install_cmd: if dml_ok || py_too_new { None } else { Some(pip_install("openai-whisper torch-directml")) },
             download_url: None,
             optional: true,
         });

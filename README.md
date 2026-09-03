@@ -4,6 +4,10 @@ AI-powered desktop app that turns a long video into short, ready-to-post clips �
 
 Built with [Tauri](https://tauri.app) (Rust + React/TypeScript), open source under the MIT license.
 
+## Download
+
+Prebuilt installers (macOS `.dmg`, Linux `.deb`, Windows `.zip`) are on the [Releases page](https://github.com/oentoro/autoclipper/releases/latest).
+
 ## Features
 
 - **Transcription** — local Whisper transcription (`faster-whisper`, with `mlx-whisper` GPU/Neural Engine acceleration on Apple Silicon), multi-language source detection, speed presets (fast/balanced/accurate/best)
@@ -15,7 +19,7 @@ Built with [Tauri](https://tauri.app) (Rust + React/TypeScript), open source und
 - **Burned-in subtitles** — customizable color, outline, background box, position, font, size, and ALL CAPS
 - **Face/head censoring** — pixelate or overlay-image privacy blur, detecting faces or full heads (MediaPipe), for anyone who needs to stay off camera
 - **Caption generation** — AI-generated short/long captions and hashtags per clip
-- **YouTube import** — download a source video directly by URL (`yt-dlp`)
+- **YouTube import** — download a source video directly by URL (`yt-dlp[default]` + Deno as the JS-challenge runtime)
 - **Bilingual UI** — Indonesian and English
 
 ## Tech Stack
@@ -33,6 +37,7 @@ Built with [Tauri](https://tauri.app) (Rust + React/TypeScript), open source und
 - Python 3 (the app can set up its own bundled Python environment — see below)
 - FFmpeg + FFprobe (bundled automatically on first run if not found on your system)
 - Optional: [Ollama](https://ollama.com) for local LLM-powered segment selection and captions
+- Optional: [Deno](https://deno.land) for YouTube import — yt-dlp needs a JS runtime to solve YouTube's signature challenge; without it, downloads fail with HTTP 403
 
 ## Development
 
